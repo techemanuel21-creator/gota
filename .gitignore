@@ -1,0 +1,22 @@
+# Android / Gradle build output
+/build/
+/app/build/
+.gradle/
+.kotlin/
+
+# Local machine config (SDK path is specific to this PC)
+local.properties
+
+# Android Studio / IDE
+.idea/
+*.iml
+.DS_Store
+
+# Scratch folder: downloaded tools, previews, the 2.5GB model copy, debug APKs — not project source
+/.tools/
+
+# Logs
+*.log
+
+# Claude Code session state (not project source)
+.claude/

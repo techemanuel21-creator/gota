@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Gota Local Assistant</string>
+    <string name="accessibility_service_description">Usada só para perceber quando você segura o botão de aumentar volume, mesmo com a tela desligada ou o app fechado, e então chamar o Gota. Não lê nem toca em nada na tela.</string>
+</resources>

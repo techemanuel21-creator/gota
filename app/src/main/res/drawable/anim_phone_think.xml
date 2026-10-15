@@ -1,0 +1,6 @@
+﻿<animation-list xmlns:android="http://schemas.android.com/apk/res/android" android:oneshot="false">
+    <item android:drawable="@drawable/cat_phone_think1" android:duration="380" />
+    <item android:drawable="@drawable/cat_phone_think2" android:duration="380" />
+    <item android:drawable="@drawable/cat_phone_think3" android:duration="520" />
+</animation-list>
+

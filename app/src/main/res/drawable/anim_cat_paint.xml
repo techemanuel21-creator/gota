@@ -1,0 +1,11 @@
+﻿<animation-list xmlns:android="http://schemas.android.com/apk/res/android" android:oneshot="false">
+    <item android:drawable="@drawable/cat_paint1" android:duration="420" />
+    <item android:drawable="@drawable/cat_paint2" android:duration="420" />
+    <item android:drawable="@drawable/cat_paint3" android:duration="420" />
+    <item android:drawable="@drawable/cat_paint4" android:duration="420" />
+    <item android:drawable="@drawable/cat_paint5" android:duration="300" />
+    <item android:drawable="@drawable/cat_paint4" android:duration="300" />
+    <item android:drawable="@drawable/cat_paint5" android:duration="300" />
+    <item android:drawable="@drawable/cat_paint4" android:duration="700" />
+</animation-list>
+
