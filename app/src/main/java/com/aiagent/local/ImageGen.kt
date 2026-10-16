@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import org.pytorch.executorch.EValue
 import org.pytorch.executorch.Module
 import org.pytorch.executorch.Tensor
@@ -39,6 +41,13 @@ import java.util.Random
 object ImageGen {
 
     private const val Z_IMAGE_SPACE = "https://tongyi-mai-z-image-turbo.hf.space"
+    private const val FLUX_SPACE = "https://black-forest-labs-flux-1-schnell.hf.space"
+    private const val USER_AGENT = "GotaApp/1.0 (Android)"
+
+    const val SERVICE_Z_IMAGE = "Z-Image"
+    const val SERVICE_FLUX = "FLUX"
+    const val SERVICE_POLLINATIONS = "Pollinations"
+
     private const val REPO = "https://huggingface.co/software-mansion/react-native-executorch-sdxs-512-dreamshaper/resolve/main/"
     private const val TOKENIZER_REPO = "https://huggingface.co/IDKiro/sdxs-512-dreamshaper/resolve/main/tokenizer/"
 
@@ -47,7 +56,8 @@ object ImageGen {
         CPU(REPO + "xnnpack/sdxs_512_dreamshaper_xnnpack_fp32.pte", "sdxs_cpu.pte", 1679)
     }
 
-    class NotReadyException(message: String) : Exception(message)
+    /** The on-device painter can't draw yet: not downloaded, or its graphics-card version failed ([gpuFailed]). */
+    class NotReadyException(val gpuFailed: Boolean, val detail: String?) : Exception("on-device image model not ready")
 
     /** Gallery album (folder Pictures/GOTA IA) where every picture he paints is saved. */
     const val ALBUM = "GOTA IA"
@@ -119,37 +129,80 @@ object ImageGen {
         }
     }
 
-    /** Blocking (network). Draws online with Z-Image Turbo and saves to the gallery. */
-    fun generateOnline(context: Context, prompt: String): Uri {
-        val bytes = zImage(prompt)
-        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            ?: throw IOException("A imagem veio corrompida.")
-        val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
-        bitmap.recycle()
-        return saveToGallery(context, out.toByteArray())
+    /** A picture made online and which service made it. */
+    class OnlineImage(val uri: Uri, val service: String)
+
+    /** Every online service failed; [details] says why for each one. */
+    class OnlineFailed(val details: String) : IOException(details)
+
+    /**
+     * Blocking (network). Tries the free services from best to simplest and saves the first
+     * picture that comes back: Z-Image Turbo (sharp, 1024px), FLUX.1 schnell, and, as a last
+     * resort, the older Pollinations model (softer, with a small watermark).
+     */
+    fun generateOnline(context: Context, prompt: String): OnlineImage {
+        val attempts = listOf<Pair<String, () -> ByteArray>>(
+            SERVICE_Z_IMAGE to { gradio(Z_IMAGE_SPACE, "generate", zImageData(prompt)) },
+            SERVICE_FLUX to { gradio(FLUX_SPACE, "infer", fluxData(prompt)) },
+            SERVICE_POLLINATIONS to { pollinations(prompt) }
+        )
+        val errors = mutableListOf<String>()
+        for ((name, attempt) in attempts) {
+            try {
+                return OnlineImage(saveToGallery(context, reencode(attempt())), name)
+            } catch (e: Throwable) {
+                errors += "$name: ${e.message ?: e.javaClass.simpleName}".take(90)
+            }
+        }
+        throw OnlineFailed(errors.joinToString(" | "))
+    }
+
+    // prompt, resolution, seed, steps, time shift, random seed, gallery
+    private fun zImageData(prompt: String) = JSONArray()
+        .put(prompt).put("1024x1024 ( 1:1 )").put(Random().nextInt(2_000_000_000)).put(8).put(3.0).put(false).put(JSONArray())
+
+    // prompt, seed, randomize seed, width, height, steps
+    private fun fluxData(prompt: String) = JSONArray().put(prompt).put(0).put(true).put(1024).put(1024).put(4)
+
+    private fun pollinations(prompt: String): ByteArray {
+        val url = "https://image.pollinations.ai/prompt/" + Uri.encode(prompt) +
+            "?width=1024&height=1024&nologo=true&seed=${Random().nextInt(1_000_000)}"
+        return httpGet(url, 45_000).also { if (it.size < 1000) throw IOException("resposta vazia") }
     }
 
     /** Gradio's HTTP API: start a job, wait for the "complete" event, then download the picture. */
-    private fun zImage(prompt: String): ByteArray {
-        val seed = Random().nextInt(2_000_000_000)
-        // prompt, resolution, seed, steps, time shift, random seed, gallery
-        val data = org.json.JSONArray()
-            .put(prompt).put("1024x1024 ( 1:1 )").put(seed).put(8).put(3.0).put(false).put(org.json.JSONArray())
-        val body = org.json.JSONObject().put("data", data).toString()
-        val eventId = org.json.JSONObject(String(httpPost("$Z_IMAGE_SPACE/gradio_api/call/generate", body))).getString("event_id")
-        val events = String(httpGet("$Z_IMAGE_SPACE/gradio_api/call/generate/$eventId", 150_000))
+    private fun gradio(space: String, endpoint: String, data: JSONArray): ByteArray {
+        val start = httpPost("$space/gradio_api/call/$endpoint", JSONObject().put("data", data).toString())
+        val eventId = JSONObject(String(start)).getString("event_id")
+        val events = String(httpGet("$space/gradio_api/call/$endpoint/$eventId", 100_000))
         val result = events.substringAfterLast("event: complete", "")
-        if (result.isEmpty()) throw IOException("O gerador de imagens está ocupado.")
-        val path = Regex("\"url\":\\s*\"([^\"]+)\"").find(result)?.groupValues?.get(1)
-            ?: throw IOException("O gerador não devolveu a imagem.")
-        return httpGet(if (path.startsWith("/")) Z_IMAGE_SPACE + path else path, 60_000)
+        if (result.isEmpty()) {
+            // These Spaces run on shared "ZeroGPU": people without an account get a small daily GPU
+            // allowance (per internet address), and past it the service fails at once with an empty
+            // error. That is by far the usual cause, so say so.
+            val error = events.substringAfter("event: error", "").lineSequence()
+                .firstOrNull { it.trim().startsWith("data:") }?.substringAfter("data:")?.trim()?.trim('"')
+            throw IOException(error?.takeIf { it.isNotBlank() && it != "null" } ?: "cota gratuita do dia esgotada ou serviço ocupado")
+        }
+        val url = Regex("\"url\":\\s*\"([^\"]+)\"").find(result)?.groupValues?.get(1)
+            ?: throw IOException("a resposta veio sem imagem")
+        return httpGet(if (url.startsWith("/")) space + url else url, 60_000)
+    }
+
+    /** Whatever format the service returned (PNG, WebP, JPEG) → a good JPEG for the gallery. */
+    private fun reencode(bytes: ByteArray): ByteArray {
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw IOException("imagem corrompida")
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        bitmap.recycle()
+        return out.toByteArray()
     }
 
     private fun httpPost(url: String, json: String): ByteArray {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 20_000; c.readTimeout = 60_000; c.requestMethod = "POST"; c.doOutput = true
         c.setRequestProperty("Content-Type", "application/json")
+        c.setRequestProperty("User-Agent", USER_AGENT)
         try {
             c.outputStream.use { it.write(json.toByteArray()) }
             if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
@@ -160,6 +213,7 @@ object ImageGen {
     private fun httpGet(url: String, readTimeout: Int): ByteArray {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 20_000; c.readTimeout = readTimeout; c.instanceFollowRedirects = true
+        c.setRequestProperty("User-Agent", USER_AGENT)
         try {
             if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
             return c.inputStream.use { it.readBytes() }
@@ -169,8 +223,8 @@ object ImageGen {
     /** Blocking. Draws the picture on the phone and returns its gallery Uri. */
     fun generate(context: Context, prompt: String): Uri = synchronized(this) {
         // A GPU driver crash kills the app before any catch runs; the marker left behind tells us next time.
-        if (prefs(context).getBoolean("gpu_running", false)) giveUpOnGpu(context)
-        if (!isReady(context)) throw NotReadyException("modelo ausente")
+        if (prefs(context).getBoolean("gpu_running", false)) giveUpOnGpu(context, "o app fechou durante um desenho anterior")
+        if (!isReady(context)) throw NotReadyException(gpuFailed = variant(context) == Variant.CPU && gpuFailed(context), detail = lastError(context))
         val variant = variant(context)
         val modelFile = File(dir(context), variant.fileName)
         if (variant == Variant.GPU) prefs(context).edit().putBoolean("gpu_running", true).commit()
@@ -178,8 +232,9 @@ object ImageGen {
             run(context, modelFile, prompt)
         } catch (e: Throwable) {
             if (variant == Variant.GPU) {
-                giveUpOnGpu(context)
-                throw NotReadyException("gpu")
+                giveUpOnGpu(context, "${e.javaClass.simpleName}: ${e.message}".take(160))
+                // The processor version may already be on the phone: use it right away.
+                return@synchronized generate(context, prompt)
             }
             throw e
         } finally {
@@ -188,11 +243,17 @@ object ImageGen {
         saveToGallery(context, toJpeg(pixels))
     }
 
-    /** This GPU can't run the model: switch to the processor version for good. */
-    private fun giveUpOnGpu(context: Context) {
-        prefs(context).edit().putBoolean("gpu_failed", true).putBoolean("gpu_running", false).commit()
+    private fun gpuFailed(context: Context) = prefs(context).getBoolean("gpu_failed", false)
+
+    /** Why the graphics-card version failed (kept to show in the chat, for diagnosis). */
+    fun lastError(context: Context): String? = prefs(context).getString("last_error", null)
+
+    /** This GPU can't run the model: switch to the processor version for good (downloaded on Wi-Fi only). */
+    private fun giveUpOnGpu(context: Context, reason: String) {
+        prefs(context).edit()
+            .putBoolean("gpu_failed", true).putBoolean("gpu_running", false).putString("last_error", reason).commit()
         File(dir(context), Variant.GPU.fileName).delete()
-        startDownload(context)
+        startDownload(context, onlyOnWifi = true)
     }
 
     private fun run(context: Context, modelFile: File, prompt: String): FloatArray {
