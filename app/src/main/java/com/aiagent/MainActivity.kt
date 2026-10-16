@@ -1,7 +1,6 @@
 package com.aiagent
 
 import android.Manifest
-import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -15,7 +14,6 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.Gravity
 import android.view.View
-import android.view.accessibility.AccessibilityManager
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -59,7 +57,7 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
 
     private enum class Step {
-        NAME, NOTIFICATIONS, MICROPHONE, LOCATION, CALENDAR, ACCESSIBILITY, NOTIFICATION_LISTENER, OVERLAY, MODEL, READY
+        NAME, NOTIFICATIONS, MICROPHONE, LOCATION, CALENDAR, NOTIFICATION_LISTENER, OVERLAY, MODEL, READY
     }
 
     private lateinit var drawer: DrawerLayout
@@ -251,7 +249,6 @@ class MainActivity : AppCompatActivity() {
         if (!hasPermission(Manifest.permission.RECORD_AUDIO) && !skipped("mic")) return Step.MICROPHONE
         if (!LocationHelper.hasPermission(this) && !skipped("location")) return Step.LOCATION
         if (!CalendarHelper.hasPermission(this) && !skipped("calendar")) return Step.CALENDAR
-        if (!isAccessibilityServiceEnabled() && !skipped("accessibility")) return Step.ACCESSIBILITY
         if (!isNotificationListenerEnabled() && !skipped("listener")) return Step.NOTIFICATION_LISTENER
         if (!Settings.canDrawOverlays(this) && !skipped("overlay")) return Step.OVERLAY
         if (!GemmaAgent.isLoaded()) return Step.MODEL
@@ -261,14 +258,6 @@ class MainActivity : AppCompatActivity() {
     private fun isNotificationPermissionGranted(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true
         return hasPermission(Manifest.permission.POST_NOTIFICATIONS)
-    }
-
-    private fun isAccessibilityServiceEnabled(): Boolean {
-        val am = getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager
-        return am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any {
-            it.resolveInfo.serviceInfo.packageName == packageName &&
-                it.resolveInfo.serviceInfo.name == AgentAccessibilityService::class.java.name
-        }
     }
 
     private fun isNotificationListenerEnabled() =
@@ -300,11 +289,6 @@ class MainActivity : AppCompatActivity() {
                 "📅", "Permitir agenda",
                 "Para o Gota ler seus compromissos do dia. Funciona com a agenda do Google, da Samsung e do Outlook (ative \"Sincronizar calendários\" no app do Outlook).",
                 "Permitir", { calendarPermissionLauncher.launch(Manifest.permission.READ_CALENDAR) }, "calendar"
-            )
-            Step.ACCESSIBILITY -> showStep(
-                "♿", "Ativar Acessibilidade",
-                "Usada só para chamar o Gota segurando o botão de volume, mesmo com a tela desligada. Não lê nem controla nada na sua tela. Só você pode ativar isso, nas Configurações.",
-                "Abrir Configurações", { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }, "accessibility"
             )
             Step.NOTIFICATION_LISTENER -> showStep(
                 "🔎", "Ativar Leitor de Notificações",
@@ -799,9 +783,7 @@ class MainActivity : AppCompatActivity() {
         startForegroundService(Intent(this, VoiceService::class.java))
         val how = if (prefs.getString("wake_mode", "button") == "voice") "dizer \"Hey Gota\""
         else "segurar o botão de aumentar volume por meio segundo"
-        val accessibilityNote = if (prefs.getString("wake_mode", "button") != "voice" && !isAccessibilityServiceEnabled())
-            " (Para o botão funcionar, a Acessibilidade do Gota precisa estar ativada.)" else ""
-        addBubble("Às suas ordens. Para me chamar, é só $how, mesmo com o app fechado.$accessibilityNote", isUser = false)
+        addBubble("Às suas ordens. Para me chamar, é só $how, mesmo com o app fechado.", isUser = false)
     }
 
     private fun setVoiceSwitchSilently(checked: Boolean) {

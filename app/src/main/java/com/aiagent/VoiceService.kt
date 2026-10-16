@@ -16,9 +16,7 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -58,7 +56,8 @@ import java.io.File
 
 /**
  * Gota by voice. Two ways to call it:
- *  - "button" (default, saves battery): hold Volume Up; the microphone stays off until then.
+ *  - "button" (default, saves battery): hold Volume Up (see [VolumeButtonWatcher]); the
+ *    microphone stays off until then.
  *  - "voice": listens offline for "Hey Gota" with Vosk (uses more battery).
  * Then Android's recognizer captures the question, the local model answers, and the cat
  * (sliding up from the bottom of the screen, over any app) speaks the reply.
@@ -79,6 +78,7 @@ class VoiceService : Service() {
     private var catImage: ImageView? = null
     private var bob: ObjectAnimator? = null
     private var conversation = 0
+    private var volumeButton: VolumeButtonWatcher? = null
 
     private val voiceMode get() = getSharedPreferences("gota", MODE_PRIVATE).getString("wake_mode", "button") == "voice"
 
@@ -93,6 +93,7 @@ class VoiceService : Service() {
         }
         instance = this
         running = true
+        volumeButton = VolumeButtonWatcher(this) { onWakeWord() }.also { it.start() }
         scope.launch { prepare() }
     }
 
@@ -462,6 +463,8 @@ class VoiceService : Service() {
     override fun onDestroy() {
         running = false
         instance = null
+        volumeButton?.stop()
+        volumeButton = null
         scope.cancel()
         bob?.cancel()
         catView?.let { view -> runCatching { getSystemService(WindowManager::class.java).removeView(view) } }
@@ -491,11 +494,5 @@ class VoiceService : Service() {
         /** Lets the chat screen refresh when a voice conversation is saved. */
         @Volatile
         var exchangeListener: ((chatId: String) -> Unit)? = null
-
-        /** Called by the Volume Up long-press (from the accessibility service). */
-        fun trigger(context: Context) {
-            val service = instance ?: return
-            Handler(Looper.getMainLooper()).post { service.onWakeWord() }
-        }
     }
 }
