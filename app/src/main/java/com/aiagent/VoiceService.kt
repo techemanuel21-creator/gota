@@ -56,8 +56,8 @@ import java.io.File
 
 /**
  * Gota by voice. Two ways to call it:
- *  - "button" (default, saves battery): hold Volume Up (see [VolumeKeyListener]); the
- *    microphone stays off until then.
+ *  - "button" (default, saves battery): swipe in from the left edge (see [EdgeTriggerOverlay]);
+ *    the microphone stays off until then.
  *  - "voice": listens offline for "Hey Gota" with Vosk (uses more battery).
  * Then Android's recognizer captures the question, the local model answers, and the cat
  * (sliding up from the bottom of the screen, over any app) speaks the reply.
@@ -78,7 +78,7 @@ class VoiceService : Service() {
     private var catImage: ImageView? = null
     private var bob: ObjectAnimator? = null
     private var conversation = 0
-    private var volumeKeys: VolumeKeyListener? = null
+    private var edgeTrigger: EdgeTriggerOverlay? = null
 
     private val voiceMode get() = getSharedPreferences("gota", MODE_PRIVATE).getString("wake_mode", "button") == "voice"
 
@@ -93,13 +93,12 @@ class VoiceService : Service() {
         }
         instance = this
         running = true
-        volumeKeys = VolumeKeyListener(this) { onWakeWord() }.also { it.start() }
+        edgeTrigger = EdgeTriggerOverlay(applicationContext) { runOnMain { onWakeWord() } }
         scope.launch { prepare() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_RELOAD_MODE) scope.launch { applyMode() }
-        if (intent?.action == ACTION_REFRESH_KEYS && volumeKeys?.start() == true && !busy) updateNotification(idleHint())
         return START_NOT_STICKY
     }
 
@@ -138,11 +137,9 @@ class VoiceService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
     }
 
-    private fun idleHint() = when {
-        voiceMode -> "Diga \"Hey Gota\" para me chamar."
-        VolumeKeyListener.isAllowed(this) -> "Segure o botão de aumentar volume para me chamar."
-        else -> "Para me chamar pelo volume +, falta liberar uma permissão pelo computador (veja no app)."
-    }
+    private fun idleHint() =
+        if (voiceMode) "Diga \"Hey Gota\" para me chamar."
+        else "Deslize da borda esquerda para me chamar."
 
     private suspend fun prepare() {
         try {
@@ -164,6 +161,7 @@ class VoiceService : Service() {
     /** Turns the always-on wake word on or off according to the chosen mode. */
     private suspend fun applyMode() {
         if (voiceMode) {
+            edgeTrigger?.hide()
             if (voskModel == null) {
                 if (!WakeWordModel.isReady(this)) updateNotification("Baixando o reconhecimento de voz (~30 MB)...")
                 val dir = withContext(Dispatchers.IO) { WakeWordModel.ensure(this@VoiceService) }
@@ -173,6 +171,7 @@ class VoiceService : Service() {
             stopWakeListening()
             voskModel?.close()
             voskModel = null
+            edgeTrigger?.show()
         }
         startWakeListening()
     }
@@ -466,8 +465,8 @@ class VoiceService : Service() {
     override fun onDestroy() {
         running = false
         instance = null
-        volumeKeys?.stop()
-        volumeKeys = null
+        edgeTrigger?.hide()
+        edgeTrigger = null
         scope.cancel()
         bob?.cancel()
         catView?.let { view -> runCatching { getSystemService(WindowManager::class.java).removeView(view) } }
@@ -486,9 +485,6 @@ class VoiceService : Service() {
         private const val WAKE_GRAMMAR = "[\"ei gota\", \"oi gota\", \"hey gota\", \"gota\", \"[unk]\"]"
         const val ACTION_RELOAD_MODE = "com.aiagent.RELOAD_MODE"
 
-        /** Retries the volume key listener, e.g. right after its permission was granted. */
-        const val ACTION_REFRESH_KEYS = "com.aiagent.REFRESH_KEYS"
-
         @Volatile
         var running = false
             private set
@@ -501,4 +497,7 @@ class VoiceService : Service() {
         @Volatile
         var exchangeListener: ((chatId: String) -> Unit)? = null
     }
+
+    /** Called from the Quick Settings tile to bring Gota up at once. */
+    fun summon() = runOnMain { onWakeWord() }
 }

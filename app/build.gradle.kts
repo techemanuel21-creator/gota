@@ -65,8 +65,6 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     // Offline image generation (SDXS on the GPU via Vulkan, or the CPU via XNNPACK).
     implementation("org.pytorch:executorch-android-vulkan:1.5.1")
-    // Lets Gota use Android's hidden volume key long-press listener (no Accessibility needed).
-    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

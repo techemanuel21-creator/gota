@@ -17,11 +17,6 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
-    <!-- Holding Volume Up calls Gota. A "development" permission: granted once from a computer with
-         adb shell pm grant com.aiagent android.permission.SET_VOLUME_KEY_LONG_PRESS_LISTENER -->
-    <uses-permission
-        android:name="android.permission.SET_VOLUME_KEY_LONG_PRESS_LISTENER"
-        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <intent>
@@ -79,6 +74,17 @@
             android:name=".VoiceService"
             android:exported="false"
             android:foregroundServiceType="microphone|location" />
+
+        <service
+            android:name=".GotaTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_gota"
+            android:label="Gota"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".AgentNotificationListenerService"

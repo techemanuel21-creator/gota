@@ -422,7 +422,7 @@
                 android:id="@+id/wakeButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Segurar o volume + (economiza bateria)"
+                android:text="Deslizar da borda esquerda (economiza bateria)"
                 android:textColor="@color/text_primary"
                 android:textSize="13sp" />
 

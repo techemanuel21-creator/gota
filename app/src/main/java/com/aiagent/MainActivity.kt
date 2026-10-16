@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.animation.ObjectAnimator
 import android.graphics.drawable.AnimationDrawable
 import android.net.Uri
 import android.os.Build
@@ -13,6 +14,8 @@ import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.Gravity
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.view.View
 import android.widget.EditText
 import android.widget.ImageView
@@ -223,9 +226,6 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         LocationHelper.warmUp(this)
-        if (VoiceService.running && VolumeKeyListener.isAllowed(this)) {
-            startService(Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_REFRESH_KEYS))
-        }
         VoiceService.exchangeListener = { chatId ->
             runOnUiThread { if (chatId == currentChatId && chatGroup.visibility == View.VISIBLE) renderChat() }
         }
@@ -436,6 +436,82 @@ class MainActivity : AppCompatActivity() {
         if (voiceWanted && !VoiceService.running) startForegroundService(Intent(this, VoiceService::class.java))
         setVoiceSwitchSilently(voiceWanted || VoiceService.running)
         renderChat()
+        if (!prefs.getBoolean("tutorial_shown", false)) chatContainer.post { showEdgeTutorial() }
+    }
+
+    /** On first use, the cat shows how to summon him: a finger swiping in from the left edge. */
+    private fun showEdgeTutorial() {
+        prefs.edit().putBoolean("tutorial_shown", true).apply()
+        val root = findViewById<ViewGroup>(android.R.id.content)
+        val screenW = resources.displayMetrics.widthPixels
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0xE60F1222.toInt())
+            isClickable = true
+        }
+
+        // A finger sliding in from the left edge, looping, to demonstrate the gesture.
+        val finger = TextView(this).apply {
+            text = "👉"
+            textSize = 40f
+        }
+        scrim.addView(finger, FrameLayout.LayoutParams(dp(60), dp(60)).apply {
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            topMargin = dp(120)
+        })
+        val slide = ObjectAnimator.ofFloat(finger, View.TRANSLATION_X, 0f, (screenW * 0.42f)).apply {
+            duration = 1100
+            repeatCount = ObjectAnimator.INFINITE
+            startDelay = 300
+        }
+        val fade = ObjectAnimator.ofFloat(finger, View.ALPHA, 1f, 1f, 0f).apply {
+            duration = 1100
+            repeatCount = ObjectAnimator.INFINITE
+            startDelay = 300
+        }
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(32), 0, dp(32), 0)
+        }
+        val cat = ImageView(this).apply {
+            setImageResource(R.drawable.anim_cat_talk)
+            (drawable as? AnimationDrawable)?.start()
+        }
+        column.addView(cat, LinearLayout.LayoutParams(dp(150), dp(150)))
+        column.addView(TextView(this).apply {
+            text = "Para me chamar a qualquer momento, deslize o dedo da borda esquerda da tela para dentro."
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 17f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(16), 0, 0)
+        })
+        column.addView(TextView(this).apply {
+            text = "Some sozinho quando o teclado está aberto. Você também pode usar o bloco \"Gota\" nas configurações rápidas."
+            setTextColor(0xFFA0A4C1.toInt())
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(10), 0, 0)
+        })
+        val gotIt = com.google.android.material.button.MaterialButton(this).apply {
+            text = "Entendi"
+            isAllCaps = false
+            setOnClickListener {
+                slide.cancel(); fade.cancel()
+                root.removeView(scrim)
+            }
+        }
+        column.addView(gotIt, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(24)
+        })
+        scrim.addView(column, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER
+        ))
+
+        root.addView(scrim, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        slide.start()
+        fade.start()
     }
 
     /** Opens the call screen: a continuous spoken conversation saved as its own chat. */
@@ -785,16 +861,8 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putBoolean("voice_enabled", true).apply()
         startForegroundService(Intent(this, VoiceService::class.java))
         val buttonMode = prefs.getString("wake_mode", "button") != "voice"
-        val how = if (buttonMode) "segurar o botão de aumentar volume por meio segundo" else "dizer \"Hey Gota\""
+        val how = if (buttonMode) "deslizar da borda esquerda da tela" else "dizer \"Hey Gota\""
         addBubble("Às suas ordens. Para me chamar, é só $how, mesmo com o app fechado.", isUser = false)
-        if (buttonMode && !VolumeKeyListener.isAllowed(this)) {
-            addBubble(
-                "Para o botão de volume funcionar, falta liberar uma permissão uma única vez, pelo computador: " +
-                    "ative a Depuração USB nas Opções do desenvolvedor, conecte o celular ao PC e rode:\n\n" +
-                    "adb shell pm grant $packageName ${VolumeKeyListener.PERMISSION}",
-                isUser = false
-            )
-        }
     }
 
     private fun setVoiceSwitchSilently(checked: Boolean) {
