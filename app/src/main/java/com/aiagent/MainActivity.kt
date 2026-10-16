@@ -398,9 +398,9 @@ class MainActivity : AppCompatActivity() {
                 if (!GemmaAgent.isLoaded()) {
                     withContext(Dispatchers.IO) { GemmaAgent.load(applicationContext, modelFile.absolutePath) }
                 }
-                // Online pictures come from Z-Image. The painter for offline use is fetched now, on
-                // Wi-Fi only, so it is already on the phone when there is no internet (it can't be
-                // downloaded then). Does nothing if it is there already or the phone is on mobile data.
+                // The painter that draws the pictures is fetched now, on Wi-Fi only, so it is already
+                // on the phone when there is no internet (it can't be downloaded then). Does nothing
+                // if it is there already or the phone is on mobile data.
                 ImageGen.startDownload(applicationContext, onlyOnWifi = true)
                 modelJob = null
                 refresh()
