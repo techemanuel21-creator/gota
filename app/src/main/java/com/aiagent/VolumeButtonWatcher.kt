@@ -5,16 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.AudioManager
+import android.os.Build
 import android.os.SystemClock
+import android.view.ViewConfiguration
 import androidx.core.content.ContextCompat
 
 /**
  * Notices Volume Up being held, without the Accessibility service and in any app (videos too).
  *
- * Android doesn't let a normal app catch the key itself, but it announces every volume change to
- * all apps. A tap raises the volume one step; holding the key makes Android repeat it, so the
- * volume climbs several steps in well under a second ([VolumeHoldDetector]). When that happens
- * Gota puts the volume back where it was and is called.
+ * Android doesn't let a normal app see the key itself, but it announces every volume change to
+ * all apps. Holding the key makes the volume climb with the system's exact key-repeat rhythm,
+ * which dragging the on-screen slider never has ([VolumeHoldDetector]). When that happens Gota
+ * puts the volume back where it was and is called.
  *
  * Limitations, both because the volume doesn't move so there is nothing to notice: it can't work
  * when the volume is already at the maximum, nor with the screen off while nothing is playing
@@ -23,7 +25,13 @@ import androidx.core.content.ContextCompat
 class VolumeButtonWatcher(private val context: Context, private val onLongPress: () -> Unit) {
 
     private val audio = context.getSystemService(AudioManager::class.java)
-    private val detector = VolumeHoldDetector()
+
+    // The same key-repeat timing Android uses for the physical keys on this phone.
+    private val detector = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        VolumeHoldDetector(ViewConfiguration.getKeyRepeatTimeout().toLong(), ViewConfiguration.getKeyRepeatDelay().toLong())
+    } else {
+        VolumeHoldDetector(ViewConfiguration.getLongPressTimeout().toLong(), 50L)
+    }
     private var ringerMode = audio.ringerMode
     private var ringerBefore = audio.ringerMode
     private var ringerChangedAt = 0L
