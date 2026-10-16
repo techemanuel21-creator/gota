@@ -27,7 +27,8 @@ class ClipTokenizer(vocabJson: String, mergesTxt: String) {
         }
     }
 
-    fun encode(text: String): LongArray {
+    /** The token ids of [text] alone, without the start/end markers. */
+    fun tokens(text: String): List<Int> {
         val clean = text.replace(Regex("\\s+"), " ").trim().lowercase()
         val ids = ArrayList<Int>()
         for (match in PATTERN.findAll(clean)) {
@@ -36,6 +37,22 @@ class ClipTokenizer(vocabJson: String, mergesTxt: String) {
             }
             for (piece in bpe(mapped)) vocab[piece]?.let { ids += it }
         }
+        return ids
+    }
+
+    fun encode(text: String): LongArray = pack(tokens(text))
+
+    /**
+     * Encodes [text] followed by [suffix], keeping the whole suffix even when the text is long: the
+     * text is the part that gets cut. Used to add quality words to a picture request.
+     */
+    fun encode(text: String, suffix: String): LongArray {
+        val tail = tokens(suffix)
+        val room = (MAX_TOKENS - 2 - tail.size).coerceAtLeast(0)
+        return pack(tokens(text).take(room) + tail)
+    }
+
+    private fun pack(ids: List<Int>): LongArray {
         val out = LongArray(MAX_TOKENS) { END_ID }
         out[0] = START_ID
         val count = minOf(ids.size, MAX_TOKENS - 2)

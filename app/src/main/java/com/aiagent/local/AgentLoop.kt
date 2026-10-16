@@ -100,10 +100,12 @@ class AgentLoop(
                 {"action":"weather"}   (clima, temperatura, chuva)
                 {"action":"generate_image","prompt":"descrição da imagem EM INGLÊS"}
 
-                Criar imagens: escreva o prompt em inglês, curto e concreto (até 40 palavras), com o mais
-                importante primeiro: assunto e aparência, ação, cenário, estilo (realistic photo, cartoon, anime,
-                pixel art, 3D render...), iluminação e cores. Use "bright lighting, vivid colors", a menos que
-                peçam algo escuro ou noturno.
+                Criar imagens: escreva o prompt em inglês, curto e concreto (até 35 palavras), com o mais
+                importante primeiro: UM assunto principal e sua aparência, a ação, o cenário simples e o estilo
+                pedido (se nada for pedido, uma foto realista). O gerador é pequeno e erra em cenas cheias de
+                gente ou de objetos, então mantenha só o que foi pedido, sem inventar elementos. Use luz natural,
+                a menos que peçam algo noturno. NÃO escreva palavras de qualidade como "8k", "detailed" ou
+                "masterpiece": o sistema acrescenta isso sozinho.
 
                 Imagens: quando a mensagem vier com uma foto, você consegue vê-la. Responda sobre ela com "reply".
                 Se pedirem para criar ou editar uma imagem a partir dela, use "generate_image" com um prompt em inglês
@@ -526,58 +528,36 @@ class AgentLoop(
     }
 
     /**
-     * With internet the pictures come from the free online services (Z-Image first). Without it, from
-     * the painter on the phone, which is downloaded on Wi-Fi the first time the app is used.
+     * Pictures are drawn on the phone itself, with or without internet. The painter's model is
+     * downloaded on Wi-Fi the first time the app is used; if it isn't there yet, say why and what to do.
      */
     private suspend fun runImage(prompt: String) {
         onPhase(Phase.DRAWING)
         onStatus("Pintando a imagem...")
-        val saved = "Já guardei na galeria, no álbum ${ImageGen.ALBUM}."
-
-        var onlineFailure: String? = null
-        if (WebSearch.isOnline(context)) {
-            try {
-                val image = withContext(Dispatchers.IO) { ImageGen.generateOnline(context, prompt) }
-                val note = if (image.service == ImageGen.SERVICE_Z_IMAGE) ""
-                else " O serviço principal estava indisponível e usei o reserva, que desenha com menos qualidade."
-                onReply("Aqui está, $sir. $saved$note", image.uri.toString())
-                return
-            } catch (e: Throwable) {
-                onlineFailure = e.message ?: e.javaClass.simpleName
-            }
+        try {
+            val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
+            onReply("Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}.", uri.toString())
+        } catch (e: ImageGen.NotReadyException) {
+            reply(notReadyMessage(e))
+        } catch (e: Throwable) {
+            reply("Perdão, $sir, não consegui pintar a imagem agora (${(e.message ?: e.javaClass.simpleName).take(100)}).")
         }
+    }
 
-        // No connection, or every online service failed: try the painter on the phone if it is there.
-        if (ImageGen.isReady(context)) {
-            try {
-                val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
-                onReply("Aqui está, $sir. $saved", uri.toString())
-                return
-            } catch (e: ImageGen.NotReadyException) {
-                // fall through to the explanations below
-            } catch (e: Throwable) {
-                reply("Perdão, $sir, não consegui pintar a imagem agora (${(e.message ?: e.javaClass.simpleName).take(100)}).")
-                return
-            }
-        }
-
+    /** Explains why the painter can't draw yet, and starts fetching it when that's free (Wi-Fi). */
+    private fun notReadyMessage(e: ImageGen.NotReadyException): String {
         val size = ImageGen.variant(context).sizeMb
-        val detail = ImageGen.lastError(context)?.let { " (detalhe: $it)" }.orEmpty()
-        val gpuFailed = ImageGen.variant(context) == ImageGen.Variant.CPU
-        reply(
-            when {
-                onlineFailure != null && !gpuFailed ->
-                    "Os serviços de imagem não responderam agora, $sir. Tente de novo em instantes. ($onlineFailure)"
-                onlineFailure != null ->
-                    "Os serviços de imagem não responderam agora, $sir, e o desenho pelo celular está indisponível: a versão pela placa de vídeo falhou$detail e a do processador ainda não foi baixada. ($onlineFailure)"
-                ImageGen.downloading ->
-                    "Ainda estou baixando meu pintor offline, $sir: ${ImageGen.downloadPercent}% pronto. Depois disso consigo desenhar sem internet."
-                gpuFailed ->
-                    "Estou sem internet, $sir. A versão do desenho pela placa de vídeo não funcionou neste celular$detail; a do processador ($size MB) baixa sozinha quando você abrir o Gota no Wi-Fi."
-                else ->
-                    "Estou sem internet, $sir, e meu pintor offline ainda não foi baixado ($size MB). Ele baixa sozinho quando você abrir o Gota no Wi-Fi."
-            }
-        )
+        val detail = e.detail?.let { " (detalhe: $it)" }.orEmpty()
+        val whatFailed = if (e.gpuFailed) "A versão do desenho pela placa de vídeo não funcionou neste celular$detail, então usarei a do processador. " else ""
+        ImageGen.startDownload(context, onlyOnWifi = true)
+        return when {
+            ImageGen.downloading ->
+                "${whatFailed}Estou baixando meu pintor ($size MB, uma única vez), $sir: ${ImageGen.downloadPercent}% pronto. Quando terminar, é só pedir de novo."
+            ImageGen.canDownloadNow(context) ->
+                "${whatFailed}Preciso baixar meu pintor uma única vez ($size MB), $sir. Já comecei; aviso quando terminar."
+            else ->
+                "${whatFailed}Preciso baixar meu pintor uma única vez ($size MB), $sir. Conecte-se a um Wi-Fi e abra o Gota que eu baixo sozinho; depois você desenha mesmo sem internet."
+        }
     }
 
     private suspend fun runSearch(goal: String, query: String) {
