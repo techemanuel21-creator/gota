@@ -488,7 +488,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(16), 0, 0)
         })
         column.addView(TextView(this).apply {
-            text = "Some sozinho quando o teclado está aberto. Você também pode usar o bloco \"Gota\" nas configurações rápidas."
+            text = "Arraste a barrinha para cima ou para baixo para mudar de lugar. Com o teclado aberto ela sobe sozinha, e volta depois. Você também pode usar o bloco \"Gota\" nas configurações rápidas."
             setTextColor(0xFFA0A4C1.toInt())
             textSize = 13f
             gravity = Gravity.CENTER
