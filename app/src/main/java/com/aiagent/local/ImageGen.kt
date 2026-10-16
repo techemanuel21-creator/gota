@@ -88,6 +88,13 @@ object ImageGen {
         return File(d, variant(context).fileName).exists() && File(d, "vocab.json").exists() && File(d, "merges.txt").exists()
     }
 
+    /** The last picture request, so "outra" can draw it again. */
+    fun rememberPrompt(context: Context, prompt: String) {
+        prefs(context).edit().putString("last_prompt", prompt).apply()
+    }
+
+    fun lastPrompt(context: Context): String? = prefs(context).getString("last_prompt", null)
+
     /** Why the graphics-card version failed (kept to show in the chat, for diagnosis). */
     fun lastError(context: Context): String? = prefs(context).getString("last_error", null)
 
@@ -169,8 +176,10 @@ object ImageGen {
             File(dir(context), "vocab.json").readText(),
             File(dir(context), "merges.txt").readText()
         ).also { tokenizer = it }
-        // The request first, then quality words that are kept even if the request is long.
-        val ids = clip.encode(prompt, ImagePrompt.suffixFor(prompt))
+        // The request without the words that make the painter draw hands, then quality words that are
+        // kept even if the request is long.
+        val request = ImagePrompt.sanitize(prompt)
+        val ids = clip.encode(request, ImagePrompt.suffixFor(request))
 
         val module = Module.load(modelFile.path, Module.LOAD_MODE_MMAP)
         try {

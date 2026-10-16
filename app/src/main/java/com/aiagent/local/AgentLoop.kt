@@ -101,11 +101,18 @@ class AgentLoop(
                 {"action":"generate_image","prompt":"descrição da imagem EM INGLÊS"}
 
                 Criar imagens: escreva o prompt em inglês, curto e concreto (até 35 palavras), com o mais
-                importante primeiro: UM assunto principal e sua aparência, a ação, o cenário simples e o estilo
-                pedido (se nada for pedido, uma foto realista). O gerador é pequeno e erra em cenas cheias de
-                gente ou de objetos, então mantenha só o que foi pedido, sem inventar elementos. Use luz natural,
-                a menos que peçam algo noturno. NÃO escreva palavras de qualidade como "8k", "detailed" ou
-                "masterpiece": o sistema acrescenta isso sozinho.
+                importante primeiro: UM assunto principal e sua aparência, o cenário simples e o estilo pedido
+                (se nada for pedido, uma foto realista). Use luz natural, a menos que peçam algo noturno.
+                NÃO escreva palavras de qualidade como "8k", "detailed" ou "masterpiece": o sistema acrescenta.
+                O gerador é pequeno e erra sempre em mãos, patas, dedos, texto e cenas cheias. Por isso:
+                - Prefira "close-up portrait" ou "head and shoulders": rosto e ombros do assunto, de frente.
+                - NUNCA ponha mãos ou patas segurando coisas (xícara, bule, livro, espada...). Mostre o objeto
+                  ao lado, em cima da mesa ou ao fundo, e as mãos fora do enquadramento.
+                - Um único assunto; sem várias pessoas, sem letras ou placas, sem corpo inteiro nem cenas
+                  lotadas, a menos que peçam isso de forma explícita (e então avise que pode ficar imperfeito).
+                - Não invente elementos além do pedido.
+                Exemplo: pedido "gato mordomo servindo chá" → prompt "close-up portrait of a gray cat wearing a
+                black bow tie and white collar, a white teapot and cup on a table beside him, soft window light".
 
                 Imagens: quando a mensagem vier com uma foto, você consegue vê-la. Responda sobre ela com "reply".
                 Se pedirem para criar ou editar uma imagem a partir dela, use "generate_image" com um prompt em inglês
@@ -125,6 +132,11 @@ class AgentLoop(
         val lower = AppCatalog.normalize(goal)
 
         if (imagePath == null) {
+            // "outra" / "de novo" right after a picture: draw the same request again (new random draw).
+            if (isRetryRequest(lower) && history.lastOrNull()?.image != null) {
+                // (the last message in the chat is a picture, so "outra" means "another one")
+                ImageGen.lastPrompt(context)?.let { runImage(it); return }
+            }
             quickAnswer(goal, lower)?.let { reply(it); return }
             if (isWeatherQuery(lower)) { runWeather(goal); return }
             if (isBriefingQuery(lower)) { runBriefing(lower); return }
@@ -534,9 +546,14 @@ class AgentLoop(
     private suspend fun runImage(prompt: String) {
         onPhase(Phase.DRAWING)
         onStatus("Pintando a imagem...")
+        ImageGen.rememberPrompt(context, prompt)
         try {
             val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
-            onReply("Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}.", uri.toString())
+            onReply(
+                "Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}. " +
+                    "Se não ficou bom, peça \"outra\" que eu tento de novo.",
+                uri.toString()
+            )
         } catch (e: ImageGen.NotReadyException) {
             reply(notReadyMessage(e))
         } catch (e: Throwable) {
@@ -669,6 +686,15 @@ class AgentLoop(
     private fun looksLikeJson(raw: String) = raw.contains("\"action\"")
 
     companion object {
+        private val RETRY = Regex(
+            "^(?:(?:gera|gere|faz|faca|cria|crie|desenha|desenhe|tenta|tente|manda|mande)\\s+)?(?:(?:a|uma|essa)\\s+)?" +
+                "(?:outra|outro|de novo|novamente|mais uma|nova)(?:\\s+(?:vez|imagem|versao|opcao|variacao|foto|desenho))?$|" +
+                "^(?:refaz|refaca|refazer)(?:\\s+(?:a imagem|isso|esse desenho))?$"
+        )
+
+        /** "outra", "de novo", "gera outra imagem"... (already normalized: lower case, no accents). */
+        fun isRetryRequest(lower: String) = RETRY.matches(lower)
+
         // Including the ways speech recognition mishears "hey Gota" ("pegou tô").
         private val WAKE_PREFIXES = listOf(
             "hey gota", "hei gota", "ei gota", "oi gota", "e gota", "ai gota", "rei gota", "hey gotta", "ei gotta",
