@@ -17,6 +17,11 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Holding Volume Up calls Gota. A "development" permission: granted once from a computer with
+         adb shell pm grant com.aiagent android.permission.SET_VOLUME_KEY_LONG_PRESS_LISTENER -->
+    <uses-permission
+        android:name="android.permission.SET_VOLUME_KEY_LONG_PRESS_LISTENER"
+        tools:ignore="ProtectedPermissions" />
 
     <queries>
         <intent>

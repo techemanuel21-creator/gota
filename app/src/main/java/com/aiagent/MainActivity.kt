@@ -223,6 +223,9 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         LocationHelper.warmUp(this)
+        if (VoiceService.running && VolumeKeyListener.isAllowed(this)) {
+            startService(Intent(this, VoiceService::class.java).setAction(VoiceService.ACTION_REFRESH_KEYS))
+        }
         VoiceService.exchangeListener = { chatId ->
             runOnUiThread { if (chatId == currentChatId && chatGroup.visibility == View.VISIBLE) renderChat() }
         }
@@ -781,9 +784,17 @@ class MainActivity : AppCompatActivity() {
         }
         prefs.edit().putBoolean("voice_enabled", true).apply()
         startForegroundService(Intent(this, VoiceService::class.java))
-        val how = if (prefs.getString("wake_mode", "button") == "voice") "dizer \"Hey Gota\""
-        else "segurar o botão de aumentar volume por meio segundo"
+        val buttonMode = prefs.getString("wake_mode", "button") != "voice"
+        val how = if (buttonMode) "segurar o botão de aumentar volume por meio segundo" else "dizer \"Hey Gota\""
         addBubble("Às suas ordens. Para me chamar, é só $how, mesmo com o app fechado.", isUser = false)
+        if (buttonMode && !VolumeKeyListener.isAllowed(this)) {
+            addBubble(
+                "Para o botão de volume funcionar, falta liberar uma permissão uma única vez, pelo computador: " +
+                    "ative a Depuração USB nas Opções do desenvolvedor, conecte o celular ao PC e rode:\n\n" +
+                    "adb shell pm grant $packageName ${VolumeKeyListener.PERMISSION}",
+                isUser = false
+            )
+        }
     }
 
     private fun setVoiceSwitchSilently(checked: Boolean) {
