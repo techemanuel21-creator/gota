@@ -138,40 +138,81 @@ object ImageGen {
         }
     }
 
-    /** Blocking. Draws the picture on the phone and returns its gallery Uri. */
-    fun generate(context: Context, prompt: String): Uri = synchronized(this) {
-        // A GPU driver crash kills the app before any catch runs; the marker left behind tells us next time.
-        if (prefs(context).getBoolean("gpu_running", false)) giveUpOnGpu(context, "o app fechou durante um desenho anterior")
+    /**
+     * Blocking, takes a minute or more. Draws the picture on the phone and returns its gallery Uri.
+     * [onStage] is told what is happening ("Refinando...") so the chat can show it.
+     */
+    fun generate(context: Context, prompt: String, onStage: (String) -> Unit = {}): Uri = synchronized(this) {
+        val prefs = prefs(context)
+        // A native crash kills the app before any catch runs; the markers left behind tell us next time.
+        if (prefs.getBoolean("gpu_running", false)) giveUpOnGpu(context, "o app fechou durante um desenho anterior")
+        if (prefs.getBoolean("refine_running", false)) {
+            prefs.edit().putBoolean("refine_running", false).putBoolean("refine_failed", true)
+                .putString("last_error", "o app fechou durante o refinamento (provavelmente memória); ele foi desligado").commit()
+        }
         if (!isReady(context)) {
-            throw NotReadyException(gpuFailed = prefs(context).getBoolean("gpu_failed", false), detail = lastError(context))
+            throw NotReadyException(gpuFailed = prefs.getBoolean("gpu_failed", false), detail = lastError(context))
         }
         val variant = variant(context)
         val modelFile = File(dir(context), variant.fileName)
-        if (variant == Variant.GPU) prefs(context).edit().putBoolean("gpu_running", true).commit()
-        val pixels = try {
-            run(context, modelFile, prompt)
+        onStage("Imaginando a cena...")
+        val latents = try {
+            guardGpu(context, variant) { draw(context, modelFile, prompt) }
         } catch (e: Throwable) {
             if (variant == Variant.GPU) {
                 giveUpOnGpu(context, "${e.javaClass.simpleName}: ${e.message}".take(160))
                 // The processor version may already be on the phone: use it right away.
-                return@synchronized generate(context, prompt)
+                return@synchronized generate(context, prompt, onStage)
             }
             throw e
+        }
+        saveToGallery(context, finishPicture(context, variant, modelFile, latents, onStage))
+    }
+
+    /** Marks that the graphics-card model is running, so a driver crash can be recognised afterwards. */
+    private fun <T> guardGpu(context: Context, variant: Variant, block: () -> T): T {
+        if (variant == Variant.GPU) prefs(context).edit().putBoolean("gpu_running", true).commit()
+        try {
+            return block()
         } finally {
             prefs(context).edit().putBoolean("gpu_running", false).commit()
         }
-        saveToGallery(context, finish(pixels))
     }
 
-    /** This GPU can't run the model: switch to the processor version for good (downloaded on Wi-Fi only). */
-    private fun giveUpOnGpu(context: Context, reason: String) {
-        prefs(context).edit()
-            .putBoolean("gpu_failed", true).putBoolean("gpu_running", false).putString("last_error", reason).commit()
-        File(dir(context), Variant.GPU.fileName).delete()
-        startDownload(context, onlyOnWifi = true)
+    /**
+     * Latents → picture bytes. With the finishing models (full decoder + Real-ESRGAN, 2048 px) when
+     * they are in this build and have not failed; otherwise the painter's own tiny decoder with the
+     * simple enlarger.
+     */
+    private fun finishPicture(context: Context, variant: Variant, modelFile: File, latents: FloatArray, onStage: (String) -> Unit): ByteArray {
+        val prefs = prefs(context)
+        if (ImageRefiner.isBundled(context) && !prefs.getBoolean("refine_failed", false)) {
+            prefs.edit().putBoolean("refine_running", true).commit()
+            try {
+                onStage("Preparando o refinamento...")
+                ImageRefiner.prepare(context)
+                onStage("Limpando bordas e cores (1 de 2)...")
+                val rgb = ImageRefiner.decode(context, latents)
+                onStage("Afinando os detalhes (2 de 2)...")
+                val argb = ImageRefiner.upscale(context, rgb) { done, total -> onStage("Afinando os detalhes... $done de $total") }
+                val bytes = jpeg(argb, ImageRefiner.OUTPUT_SIZE, 92)
+                prefs.edit().putBoolean("refine_running", false).putInt("refine_errors", 0).commit()
+                return bytes
+            } catch (e: Throwable) {
+                val errors = prefs.getInt("refine_errors", 0) + 1
+                prefs.edit().putBoolean("refine_running", false).putInt("refine_errors", errors)
+                    .putBoolean("refine_failed", errors >= 2)
+                    .putString("last_error", "refinamento: ${e.javaClass.simpleName}: ${e.message}".take(160)).commit()
+                // fall through to the simpler finish below
+            }
+        }
+        onStage("Terminando a imagem...")
+        val rgb = guardGpu(context, variant) { decodeSmall(modelFile, latents) }
+        return finish(rgb)
     }
 
-    private fun run(context: Context, modelFile: File, prompt: String): FloatArray {
+    /** Clean latents (4×64×64) of the picture the painter imagined for [prompt]. */
+    private fun draw(context: Context, modelFile: File, prompt: String): FloatArray {
         val clip = tokenizer ?: ClipTokenizer(
             File(dir(context), "vocab.json").readText(),
             File(dir(context), "merges.txt").readText()
@@ -194,14 +235,39 @@ object ImageGen {
                 EValue.from(Tensor.fromBlob(embeddings, longArrayOf(1, ClipTokenizer.MAX_TOKENS.toLong(), 768)))
             )[0].toTensor().dataAsFloatArray
             for (i in latents.indices) latents[i] = SAMPLE_COEFF * latents[i] + NOISE_COEFF * noise[i]
+            return latents
+        } finally {
+            module.destroy()
+        }
+    }
 
+    /** The painter's own (tiny) decoder: planar RGB, 0..1, 3×512×512. */
+    private fun decodeSmall(modelFile: File, latents: FloatArray): FloatArray {
+        val module = Module.load(modelFile.path, Module.LOAD_MODE_MMAP)
+        try {
             return module.execute("decode", EValue.from(Tensor.fromBlob(latents, LATENT_SHAPE)))[0].toTensor().dataAsFloatArray
         } finally {
             module.destroy()
         }
     }
 
-    /** Planar RGB in 0..1 → enlarged, sharpened picture → JPEG. */
+    private fun jpeg(argb: IntArray, side: Int, quality: Int): ByteArray {
+        val bitmap = Bitmap.createBitmap(argb, side, side, Bitmap.Config.ARGB_8888)
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        bitmap.recycle()
+        return out.toByteArray()
+    }
+
+    /** This GPU can't run the model: switch to the processor version for good (downloaded on Wi-Fi only). */
+    private fun giveUpOnGpu(context: Context, reason: String) {
+        prefs(context).edit()
+            .putBoolean("gpu_failed", true).putBoolean("gpu_running", false).putString("last_error", reason).commit()
+        File(dir(context), Variant.GPU.fileName).delete()
+        startDownload(context, onlyOnWifi = true)
+    }
+
+    /** The simple way to finish, when the finishing models are not available: enlarge and sharpen. */
     private fun finish(rgb: FloatArray): ByteArray {
         val plane = SIZE * SIZE
         fun channel(v: Float) = (v * 255f + 0.5f).toInt().coerceIn(0, 255)
@@ -209,11 +275,7 @@ object ImageGen {
             (0xFF shl 24) or (channel(rgb[i]) shl 16) or (channel(rgb[plane + i]) shl 8) or channel(rgb[2 * plane + i])
         }
         val big = ImageEnhancer.enhance(argb, SIZE, SIZE)
-        val bitmap = Bitmap.createBitmap(big.pixels, big.width, big.height, Bitmap.Config.ARGB_8888)
-        val out = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 93, out)
-        bitmap.recycle()
-        return out.toByteArray()
+        return jpeg(big.pixels, big.width, 93)
     }
 
     /** Resumes a half-finished download (".part" file) instead of starting over. */

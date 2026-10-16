@@ -20,3 +20,6 @@ local.properties
 
 # Claude Code session state (not project source)
 .claude/
+
+# Finishing models: rebuilt with tools/imagegen/export_models.py (see tools/imagegen/README.md)
+app/src/main/assets/imagegen/*.pte

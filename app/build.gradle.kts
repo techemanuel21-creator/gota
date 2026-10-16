@@ -36,6 +36,11 @@ android {
         viewBinding = true
     }
 
+    // Stored as they are (not compressed): the weights barely shrink and the package builds faster.
+    androidResources {
+        noCompress += "pte"
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = true

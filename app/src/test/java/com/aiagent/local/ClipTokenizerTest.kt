@@ -5,6 +5,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class ClipTokenizerTest {
 
@@ -66,5 +67,23 @@ class ClipTokenizerTest {
         assertEquals(49406L, ids[0])
         assertEquals(2368L, ids[75])
         assertEquals(49407L, ids[76])
+    }
+
+    /**
+     * With GOTA_TOKENS pointing at a JSON of {prompt: [77 ids]} made by the official Hugging Face
+     * tokenizer, every prompt must give exactly the same ids here.
+     */
+    @Test
+    fun matchesTheOfficialTokenizer() {
+        val path = System.getenv("GOTA_TOKENS")
+        org.junit.Assume.assumeTrue(path != null)
+        val reference = JSONObject(File(path!!).readText())
+        val mismatches = reference.keys().asSequence().mapNotNull { prompt ->
+            val expected = reference.getJSONArray(prompt).let { arr -> LongArray(arr.length()) { arr.getLong(it) } }
+            val ours = tokenizer.encode(prompt)
+            if (ours.contentEquals(expected)) null
+            else "$prompt\n  expected ${expected.take(30)}\n  ours     ${ours.take(30)}"
+        }.toList()
+        assertTrue("token ids differ from the official tokenizer:\n" + mismatches.joinToString("\n"), mismatches.isEmpty())
     }
 }
