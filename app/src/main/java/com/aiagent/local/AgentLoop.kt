@@ -76,6 +76,12 @@ class AgentLoop(
                 Resposta: {"action":"reply","text":"A capital da Austrália é Camberra, $sir."}
                 Pedido: "eu adoro café sem açúcar"
                 Resposta: {"action":"reply","text":"Anotado, $sir. Café sem açúcar, então.","remember":"Gosta de café sem açúcar"}
+                Pedido: "me manda um resumo rápido do que é fotossíntese"
+                Resposta: {"action":"reply","text":"É como a planta faz comida, $sir: usa luz do sol, água e gás carbônico para criar açúcar e soltar oxigênio."}
+                Pedido: "bora, abre o zap pra mim"
+                Resposta: {"action":"open_app","name":"WhatsApp"}
+                Pedido: "tava pensando em pizza hoje"
+                Resposta: {"action":"reply","text":"Excelente ideia, $sir. Quer que eu procure uma pizzaria perto?"}
 
                 Você NÃO tem acesso aos contatos. Nunca invente número de telefone; se faltar o número, peça.
 
@@ -144,8 +150,11 @@ class AgentLoop(
             else Turn("model", JSONObject().put("action", "reply").put("text", it.text).toString())
         }
 
+        // Let the model reason step by step only on questions that need it (slower but sharper);
+        // everyday commands stay fast.
+        val think = imagePath == null && needsReasoning(lower)
         val raw = try {
-            agent.chat(chatId, systemPrompt(), turns, userText, imagePath)
+            agent.chat(chatId, systemPrompt(), turns, userText, imagePath, think)
         } catch (e: Exception) {
             reply("Perdão, $sir, tive um problema ao pensar: ${e.message}")
             return
@@ -387,6 +396,16 @@ class AgentLoop(
     private fun isQuestion(goal: String, lower: String) =
         goal.contains('?') || QUESTION_START.containsMatchIn(lower) || FRESH_PATTERNS.take(3).any { it.containsMatchIn(lower) }
 
+    private val REASONING = Regex(
+        "\\b(por que|porque|pq|explique|explica|como funciona|como faco|como faço|me ensina|ensina|passo a passo|" +
+            "qual a diferenca|diferenca entre|compare|compara|resolva|calcule|quanto e|quanto é|vale a pena|" +
+            "o que significa|significado de|me ajude a pensar|o que voce acha|o que você acha|me explique)\\b"
+    )
+
+    /** True for questions that gain from step-by-step thinking (not quick commands). */
+    private fun needsReasoning(lower: String): Boolean =
+        REASONING.containsMatchIn(lower) || (lower.contains('?') && lower.split(" ").size > 8)
+
     private fun needsFreshInfo(lower: String): Boolean =
         FRESH_WORDS.containsMatchIn(lower) || FRESH_PATTERNS.any { it.containsMatchIn(lower) } ||
             (TIME_WORDS.containsMatchIn(lower) && QUESTION_START.containsMatchIn(lower))
@@ -508,29 +527,40 @@ class AgentLoop(
 
     /** Images are drawn on the phone itself; the drawing model is downloaded once, the first time. */
     private suspend fun runImage(prompt: String) {
-        if (!ImageGen.isReady(context)) {
-            val size = ImageGen.variant(context).sizeMb
-            when {
-                ImageGen.downloading ->
-                    reply("Ainda estou baixando meu estojo de pintura, $sir: ${ImageGen.downloadPercent}% pronto. Aviso quando terminar.")
-                !WebSearch.isOnline(context) ->
-                    reply("Para desenhar sem internet preciso baixar meu estojo de pintura uma única vez ($size MB), $sir. Assim que houver conexão, peça de novo.")
-                else -> {
-                    ImageGen.startDownload(context)
-                    reply("Para desenhar sem internet, preciso baixar meu estojo de pintura uma única vez ($size MB), $sir. Já comecei; aviso quando terminar.")
-                }
+        onPhase(Phase.DRAWING)
+        onStatus("Pintando a imagem...")
+        val done = "Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}."
+
+        // Online: the good, free Z-Image service (1024px). No model needed on the phone.
+        if (WebSearch.isOnline(context)) {
+            val uri = runCatching { withContext(Dispatchers.IO) { ImageGen.generateOnline(context, prompt) } }.getOrNull()
+            if (uri != null) { onReply(done, uri.toString()); return }
+            // fell through: the service failed; try the on-device model if it is ready
+        }
+
+        if (ImageGen.isReady(context)) {
+            try {
+                val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
+                onReply(done, uri.toString())
+            } catch (e: ImageGen.NotReadyException) {
+                reply("A placa de vídeo deste celular não deu conta do desenho, $sir. Estou baixando a versão que usa o processador (${ImageGen.Variant.CPU.sizeMb} MB); aviso quando terminar.")
+            } catch (e: Throwable) {
+                reply("Perdão, $sir, não consegui pintar a imagem agora.")
             }
             return
         }
-        onPhase(Phase.DRAWING)
-        onStatus("Pintando a imagem...")
-        try {
-            val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
-            onReply("Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}.", uri.toString())
-        } catch (e: ImageGen.NotReadyException) {
-            reply("A placa de vídeo deste celular não deu conta do desenho, $sir. Estou baixando a versão que usa o processador (${ImageGen.Variant.CPU.sizeMb} MB); aviso quando terminar.")
-        } catch (e: Throwable) {
-            reply("Perdão, $sir, não consegui pintar a imagem agora.")
+
+        // No connection (or the service failed) and the on-device painter isn't downloaded yet.
+        val size = ImageGen.variant(context).sizeMb
+        when {
+            ImageGen.downloading ->
+                reply("Ainda estou baixando meu estojo de pintura, $sir: ${ImageGen.downloadPercent}% pronto. Aviso quando terminar.")
+            WebSearch.isOnline(context) -> {
+                ImageGen.startDownload(context)
+                reply("O serviço de imagens falhou agora, $sir. Para eu desenhar sozinho no celular, estou baixando meu estojo de pintura uma única vez ($size MB); aviso quando terminar.")
+            }
+            else ->
+                reply("Estou sem internet, $sir, então não consigo usar o serviço de imagens nem baixar meu estojo de pintura. Com conexão, eu resolvo — e o estojo fica salvo para você desenhar offline depois.")
         }
     }
 
@@ -559,19 +589,27 @@ class AgentLoop(
             correta, no tom cordial de um mordomo clássico, chamando o dono de "$sir". Hoje é $today.
             Você pesquisou na internet e recebeu trechos. Responda à pergunta direto, em 1 ou 2 frases,
             como quem já sabe a resposta:
-            - Use só fatos dos trechos e inclua o dado principal (número, data, nome).
-            - Os trechos vêm do mais recente para o mais antigo, com a data entre parênteses. Se discordarem,
-              vale o mais recente (ex.: "vai votar" antigo e "aprovou" recente → foi aprovado).
-            - "Nesta quarta-feira (14)" quer dizer o dia 14 do mês da notícia. Diga datas por extenso ("ontem, 14 de outubro").
+            - Os trechos estão em ordem do MAIS RECENTE para o mais antigo. O trecho 1 é o mais novo; cada um
+              começa com a data entre parênteses.
+            - Baseie a resposta no estado MAIS RECENTE dos fatos. Se um trecho antigo diz "vai acontecer" e um
+              mais novo diz que "aconteceu/foi aprovado", vale o mais novo. Nunca responda com uma previsão
+              antiga se já existe um trecho mais recente dizendo o que de fato ocorreu.
+            - Para perguntas de "já foi...?", "quando...", "qual o último/mais recente", prefira o trecho 1.
+            - Inclua o dado principal (número, data, nome) e diga datas por extenso ("ontem, 14 de outubro").
+            - O 'Contexto' no fim pode estar desatualizado; só use se os trechos datados não bastarem.
             - Nunca mencione "trechos", "resultados", "pesquisa" ou sites, e não sugira onde conferir.
             - Não acrescente nada que não foi perguntado.
-            - Se os trechos não trouxerem a resposta, diga só: "Não encontrei essa informação agora, $sir."
+            - Se nada responder, diga só: "Não encontrei essa informação agora, $sir."
             Responda em texto simples, sem JSON e sem listas.
         """.trimIndent()
         val user = buildString {
-            append("Pergunta: $goal\n\nTrechos:\n")
+            append("Pergunta: $goal\n\nTrechos (1 = mais recente):\n")
             result.snippets.forEachIndexed { i, s -> append("${i + 1}. $s\n") }
-            result.pages.forEach { append("\nTrecho de notícia: $it\n") }
+            // Full-page text has no date, so it's background only, to avoid dragging in stale facts.
+            if (result.pages.isNotEmpty()) {
+                append("\nContexto (sem data, pode estar desatualizado):\n")
+                result.pages.forEach { append("$it\n") }
+            }
         }
         val raw = try {
             agent.oneShot(system, user)

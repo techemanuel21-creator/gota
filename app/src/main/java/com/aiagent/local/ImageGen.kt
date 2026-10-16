@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.net.ConnectivityManager
 import android.net.Uri
@@ -29,13 +30,15 @@ import java.net.URL
 import java.util.Random
 
 /**
- * Creates images 100% on the phone, no internet needed, with SDXS-512 DreamShaper: a distilled
- * Stable Diffusion model that draws a 512×512 picture in a single step. It runs on the GPU
- * (Vulkan); if this phone's GPU can't run it, the processor version is downloaded instead.
- * Pictures go straight to the gallery, in the "GOTA IA" album.
+ * Creates images. With internet it uses Z-Image Turbo, a free service (no account) that makes a
+ * sharp 1024×1024 picture — much better than anything that fits on the phone. Offline it falls
+ * back to SDXS-512 DreamShaper, a tiny Stable Diffusion that runs on the phone's GPU (Vulkan),
+ * and whose model is downloaded the first time it is actually needed. Pictures go straight to the
+ * gallery, in the "GOTA IA" album.
  */
 object ImageGen {
 
+    private const val Z_IMAGE_SPACE = "https://tongyi-mai-z-image-turbo.hf.space"
     private const val REPO = "https://huggingface.co/software-mansion/react-native-executorch-sdxs-512-dreamshaper/resolve/main/"
     private const val TOKENIZER_REPO = "https://huggingface.co/IDKiro/sdxs-512-dreamshaper/resolve/main/tokenizer/"
 
@@ -114,6 +117,53 @@ object ImageGen {
                 downloading = false
             }
         }
+    }
+
+    /** Blocking (network). Draws online with Z-Image Turbo and saves to the gallery. */
+    fun generateOnline(context: Context, prompt: String): Uri {
+        val bytes = zImage(prompt)
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: throw IOException("A imagem veio corrompida.")
+        val out = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+        bitmap.recycle()
+        return saveToGallery(context, out.toByteArray())
+    }
+
+    /** Gradio's HTTP API: start a job, wait for the "complete" event, then download the picture. */
+    private fun zImage(prompt: String): ByteArray {
+        val seed = Random().nextInt(2_000_000_000)
+        // prompt, resolution, seed, steps, time shift, random seed, gallery
+        val data = org.json.JSONArray()
+            .put(prompt).put("1024x1024 ( 1:1 )").put(seed).put(8).put(3.0).put(false).put(org.json.JSONArray())
+        val body = org.json.JSONObject().put("data", data).toString()
+        val eventId = org.json.JSONObject(String(httpPost("$Z_IMAGE_SPACE/gradio_api/call/generate", body))).getString("event_id")
+        val events = String(httpGet("$Z_IMAGE_SPACE/gradio_api/call/generate/$eventId", 150_000))
+        val result = events.substringAfterLast("event: complete", "")
+        if (result.isEmpty()) throw IOException("O gerador de imagens está ocupado.")
+        val path = Regex("\"url\":\\s*\"([^\"]+)\"").find(result)?.groupValues?.get(1)
+            ?: throw IOException("O gerador não devolveu a imagem.")
+        return httpGet(if (path.startsWith("/")) Z_IMAGE_SPACE + path else path, 60_000)
+    }
+
+    private fun httpPost(url: String, json: String): ByteArray {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 20_000; c.readTimeout = 60_000; c.requestMethod = "POST"; c.doOutput = true
+        c.setRequestProperty("Content-Type", "application/json")
+        try {
+            c.outputStream.use { it.write(json.toByteArray()) }
+            if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
+            return c.inputStream.use { it.readBytes() }
+        } finally { c.disconnect() }
+    }
+
+    private fun httpGet(url: String, readTimeout: Int): ByteArray {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 20_000; c.readTimeout = readTimeout; c.instanceFollowRedirects = true
+        try {
+            if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
+            return c.inputStream.use { it.readBytes() }
+        } finally { c.disconnect() }
     }
 
     /** Blocking. Draws the picture on the phone and returns its gallery Uri. */

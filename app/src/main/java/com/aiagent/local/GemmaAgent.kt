@@ -34,17 +34,20 @@ class GemmaAgent private constructor(private val engine: Engine) {
     private var liveKey: String? = null
     private var liveChars = 0
 
-    private val sampler = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.4)
+    // Low temperature so it follows instructions closely and rambles less.
+    private val sampler = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.3)
 
     suspend fun chat(
         key: String,
         systemPrompt: String,
         history: List<Turn>,
         userText: String,
-        imagePath: String? = null
+        imagePath: String? = null,
+        think: Boolean = false
     ): String = mutex.withLock {
         withContext(Dispatchers.IO) {
-            val wantedKey = "$key|${systemPrompt.hashCode()}"
+            // Thinking changes the conversation config, so a change of it rebuilds the conversation.
+            val wantedKey = "$key|${systemPrompt.hashCode()}|${if (think) "t" else "f"}"
             if (live == null || liveKey != wantedKey || liveChars > MAX_LIVE_CHARS) {
                 closeLive()
                 val turns = history.takeLast(MAX_REPLAY_TURNS)
@@ -57,7 +60,7 @@ class GemmaAgent private constructor(private val engine: Engine) {
                         systemInstruction = Contents.of(system),
                         initialMessages = replay,
                         samplerConfig = sampler,
-                        thinkingConfig = ThinkingConfig(false)
+                        thinkingConfig = ThinkingConfig(think)
                     )
                 )
                 liveKey = wantedKey

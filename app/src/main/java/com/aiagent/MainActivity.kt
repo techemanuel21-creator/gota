@@ -40,7 +40,6 @@ import com.aiagent.local.Chat
 import com.aiagent.local.ChatMessage
 import com.aiagent.local.ChatStore
 import com.aiagent.local.GemmaAgent
-import com.aiagent.local.ImageGen
 import com.aiagent.local.LocationHelper
 import com.aiagent.local.ModelDownloader
 import com.aiagent.local.UserProfile
@@ -398,8 +397,8 @@ class MainActivity : AppCompatActivity() {
                 if (!GemmaAgent.isLoaded()) {
                     withContext(Dispatchers.IO) { GemmaAgent.load(applicationContext, modelFile.absolutePath) }
                 }
-                // Gets the offline image model ready too, but only on Wi-Fi so it never eats mobile data.
-                ImageGen.startDownload(applicationContext, onlyOnWifi = true)
+                // The offline image model isn't fetched here: online uses Z-Image, and the on-device
+                // painter downloads only the first time it's actually needed (offline).
                 modelJob = null
                 refresh()
             } catch (e: Exception) {
