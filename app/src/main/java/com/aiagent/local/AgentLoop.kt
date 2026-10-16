@@ -101,18 +101,10 @@ class AgentLoop(
                 {"action":"generate_image","prompt":"descrição da imagem EM INGLÊS"}
 
                 Criar imagens: escreva o prompt em inglês, curto e concreto (até 35 palavras), com o mais
-                importante primeiro: UM assunto principal e sua aparência, o cenário simples e o estilo pedido
-                (se nada for pedido, uma foto realista). Use luz natural, a menos que peçam algo noturno.
-                NÃO escreva palavras de qualidade como "8k", "detailed" ou "masterpiece": o sistema acrescenta.
-                O gerador é pequeno e erra sempre em mãos, patas, dedos, texto e cenas cheias. Por isso:
-                - Prefira "close-up portrait" ou "head and shoulders": rosto e ombros do assunto, de frente.
-                - NUNCA ponha mãos ou patas segurando coisas (xícara, bule, livro, espada...). Mostre o objeto
-                  ao lado, em cima da mesa ou ao fundo, e as mãos fora do enquadramento.
-                - Um único assunto; sem várias pessoas, sem letras ou placas, sem corpo inteiro nem cenas
-                  lotadas, a menos que peçam isso de forma explícita (e então avise que pode ficar imperfeito).
-                - Não invente elementos além do pedido.
-                Exemplo: pedido "gato mordomo servindo chá" → prompt "close-up portrait of a gray cat wearing a
-                black bow tie and white collar, a white teapot and cup on a table beside him, soft window light".
+                importante primeiro: o assunto e sua aparência, a ação, o cenário e o estilo pedido (se nada for
+                pedido, uma foto realista). Mantenha fielmente o que a pessoa pediu, sem tirar nem inventar nada.
+                Use luz natural, a menos que peçam algo noturno. NÃO escreva palavras de qualidade como "8k",
+                "detailed" ou "masterpiece": o sistema acrescenta isso sozinho.
 
                 Imagens: quando a mensagem vier com uma foto, você consegue vê-la. Responda sobre ela com "reply".
                 Se pedirem para criar ou editar uma imagem a partir dela, use "generate_image" com um prompt em inglês

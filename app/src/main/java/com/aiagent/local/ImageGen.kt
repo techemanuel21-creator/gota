@@ -176,10 +176,8 @@ object ImageGen {
             File(dir(context), "vocab.json").readText(),
             File(dir(context), "merges.txt").readText()
         ).also { tokenizer = it }
-        // The request without the words that make the painter draw hands, then quality words that are
-        // kept even if the request is long.
-        val request = ImagePrompt.sanitize(prompt)
-        val ids = clip.encode(request, ImagePrompt.suffixFor(request))
+        // The request exactly as written, then quality words that are kept even if the request is long.
+        val ids = clip.encode(prompt, ImagePrompt.suffixFor(prompt))
 
         val module = Module.load(modelFile.path, Module.LOAD_MODE_MMAP)
         try {
