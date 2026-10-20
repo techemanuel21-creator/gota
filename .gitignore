@@ -20,3 +20,9 @@ local.properties
 
 # Claude Code session state (not project source)
 .claude/
+
+# Desktop build output and caches
+desktop/dist/
+desktop/build/
+__pycache__/
+*.pyc

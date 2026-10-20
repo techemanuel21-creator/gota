@@ -1,0 +1,10 @@
+litert-lm
+pillow
+pystray
+pyttsx3
+piper-tts
+sounddevice
+vosk
+numpy
+torch
+executorch==1.5.1
