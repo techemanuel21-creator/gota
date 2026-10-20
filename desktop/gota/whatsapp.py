@@ -194,6 +194,30 @@ class WhatsApp:
         except Exception:
             return contact
 
+    @staticmethod
+    def _attach_photo(page, image):
+        """Puts the picture in the chat as a PHOTO: through the paperclip menu's "Photos & videos" item, like a person; if the menu is not found,
+        through the page's photo file input. Never the sticker input, which would send it as a sticker."""
+        try:
+            page.locator('[aria-label="Anexar"], [aria-label="Attach"], span[data-icon="plus-rounded"], span[data-icon="plus"], span[data-icon="attach-menu-plus"]').first.click(timeout=5000)
+            item = page.locator('li:has-text("Fotos e vídeos"), [role="menuitem"]:has-text("Fotos"), li:has-text("Photos"), [role="menuitem"]:has-text("Photos")').first
+            with page.expect_file_chooser(timeout=6000) as chooser:
+                item.click(timeout=5000)
+            chooser.value.set_files(str(image))
+            return
+        except Exception:
+            try:
+                page.keyboard.press("Escape")
+            except Exception:
+                pass
+        accepts = page.eval_on_selector_all('input[type="file"]', "els => els.map(e => e.getAttribute('accept') || '')")
+        idx = next((i for i, a in enumerate(accepts) if "video" in a), None)
+        if idx is None:
+            idx = next((i for i, a in enumerate(accepts) if "image" in a and "webp" not in a), None)
+        if idx is None:
+            raise RuntimeError("Não achei o campo de fotos do WhatsApp (a página mudou?).")
+        page.locator('input[type="file"]').nth(idx).set_input_files(str(image))
+
     def send(self, contact, message="", image=None, confirm=lambda found: True, on_status=lambda s: None, dry_run=False, names=()):
         """Finds `contact` by name, asks confirm(found_name), then sends the picture and/or the text. Returns the contact's name as WhatsApp shows it.
         dry_run does everything except the final send (and cleans up): used to check that the page still looks the way this code expects."""
@@ -226,14 +250,7 @@ class WhatsApp:
                 on_status(f"Enviando para {found}…")
                 if image:
                     # a picture goes through the chat's own file picker, then its Send button
-                    # the "photos and videos" input (image/*, video/...); the other image input of the page is the STICKER one (webp only) and sends a sticker
-                    accepts = page.eval_on_selector_all('input[type="file"]', "els => els.map(e => e.getAttribute('accept') || '')")
-                    idx = next((i for i, a in enumerate(accepts) if "video" in a), None)
-                    if idx is None:
-                        idx = next((i for i, a in enumerate(accepts) if "image/*" in a), None)
-                    if idx is None:
-                        idx = next((i for i, a in enumerate(accepts) if "image" in a and "webp" not in a), 0)
-                    page.locator('input[type="file"]').nth(idx).set_input_files(str(image))
+                    self._attach_photo(page, image)
                     send_btn = page.locator('[role="button"][aria-label^="Enviar"], [aria-label^="Send"]').first
                     send_btn.wait_for(timeout=20000)
                     time.sleep(1)

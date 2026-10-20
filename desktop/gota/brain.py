@@ -233,7 +233,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         loc = tools.location() if tools._loc else None
         now = datetime.now()
         where = f" · Local: {loc['city']}" if loc and loc.get("city") else ""
-        screens = tools.screens_note()   # which screens exist and where the cursor is (empty with a single screen)
+        screens = tools.screens_note(self.screen_nicks())   # which screens exist and where the cursor is (empty with a single screen)
         extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, símbolos nem links" if spoken else "")
         user_text = f"[Agora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M}{where}{extra}]\n" + (goal or "O que você vê nesta imagem?")
         turns = [(r, t if r == "user" else json.dumps({"action": "reply", "text": t}, ensure_ascii=False)) for r, t in history if t.strip()]
@@ -262,10 +262,10 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         a = d.get("action")
         if a == "look_at_screen":
             self.on_phase("thinking")
-            return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=tools.parse_screen(goal) or d.get("screen")), None
+            return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=self.parse_screen(goal) or d.get("screen")), None
         if a == "whatsapp_send":
             self.on_phase("working")
-            d["screen"] = tools.parse_screen(goal) or d.get("screen")
+            d["screen"] = self.parse_screen(goal) or d.get("screen")
             return self.whatsapp_send(goal, d), None
         if a == "outlook":
             self.on_phase("working")
@@ -476,6 +476,14 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         except Exception:
             pass
 
+    def screen_nicks(self):
+        """{screen number: nickname} for the screens he named in the Telas window (kept by the screen's position and size)."""
+        names = self.settings.get("screen_names") or {}
+        return {m["n"]: names[m["key"]] for m in tools.monitors() if names.get(m.get("key"))}
+
+    def parse_screen(self, text):
+        return tools.parse_screen(text, {tools.norm(v): n for n, v in self.screen_nicks().items()})
+
     def capture(self, screen=None):
         """Photographs a screen (hiding Gota's own windows). screen: a number from "Telas:", "all", or None for the one with the active window.
         Returns (PIL image at full size, description, is_several_screens). Raises ValueError with a sentence for the user if the screen does not exist."""
@@ -490,6 +498,8 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                 which, big = f"todas as {len(mons)} telas lado a lado", True
             else:
                 active = tools.active_monitor(mons)
+                if want and not want.isdigit() and want != "other":   # the model passed a nickname
+                    want = str(next((n for n, v in self.screen_nicks().items() if tools.norm(v) == tools.norm(want)), want))
                 if want == "other":
                     pick = next((m for m in mons if m is not active), active)
                 else:

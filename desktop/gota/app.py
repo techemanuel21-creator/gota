@@ -473,7 +473,7 @@ class App(tk.Tk):
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9), anchor="w")
         self.dl_label.pack(fill="x", padx=8)
-        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
+        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
                           ("📜  Registro de ações", self.audit_dialog), ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial)):
             self._link(foot, text, cmd, fg=MUTED)
         self._poll_download()
@@ -1401,6 +1401,77 @@ class App(tk.Tk):
         d = Dialog(self, title, 560, height)
         tk.Label(d.body, text=hint, bg=SURFACE, fg=MUTED, wraplength=500, justify="left", font=("Segoe UI", 10)).pack(anchor="w", pady=(0, 8))
         return d
+
+    def screens_dialog(self):
+        """Lists the screens as Windows numbers them and lets him name each one by clicking it ("notebook", "monitor grande")."""
+        d = self._list_dialog("Telas", "Clique em Identificar: aparece um aviso em cada tela. Clique no aviso da tela que quiser e escolha um apelido "
+                                       "(ex.: notebook, monitor grande). Depois é só dizer \"olha o notebook\" ou \"manda um print do monitor grande\".", 520)
+        box = tk.Frame(d.body, bg=SURFACE)
+        box.pack(fill="both", expand=True)
+        overlays = []
+
+        def names():
+            return dict(self.settings.get("screen_names") or {})
+
+        def rename(m):
+            cur = names().get(m["key"], "")
+            nick = simpledialog.askstring("Apelido da tela", f"Apelido para a tela {m['n']} ({m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]}). Vazio remove:", initialvalue=cur, parent=d)
+            if nick is None:
+                return
+            all_names = names()
+            if nick.strip():
+                all_names[m["key"]] = nick.strip()
+            else:
+                all_names.pop(m["key"], None)
+            self.settings.set("screen_names", all_names)
+            refresh()
+
+        def close_overlays():
+            for o in overlays:
+                try:
+                    o.destroy()
+                except Exception:
+                    pass
+            overlays.clear()
+
+        def refresh():
+            for w in box.winfo_children():
+                w.destroy()
+            nick = names()
+            for m in tools.monitors():
+                row = tk.Frame(box, bg=SURFACE2)
+                row.pack(fill="x", pady=4)
+                w, h = m["rect"][2] - m["rect"][0], m["rect"][3] - m["rect"][1]
+                tk.Label(row, text=f"Tela {m['n']}  ·  {m['where']}  ·  {w}x{h}", bg=SURFACE2, fg=TEXT, font=FONT).pack(side="left", padx=12, pady=10)
+                tk.Label(row, text=("🏷 " + nick[m["key"]]) if nick.get(m["key"]) else "sem apelido", bg=SURFACE2, fg=ACCENT if nick.get(m["key"]) else MUTED, font=("Segoe UI", 10)).pack(side="left", padx=8)
+                RoundButton(row, "Apelido", lambda m=m: rename(m), parent_bg=SURFACE2).pack(side="right", padx=8, pady=6)
+
+        def identify():
+            close_overlays()
+            for m in tools.monitors():
+                l, t, r, b = m["rect"]
+                o = tk.Toplevel(self)
+                overlays.append(o)
+                o.overrideredirect(True)
+                o.attributes("-topmost", True)
+                o.attributes("-alpha", 0.88)
+                o.configure(bg=BG, cursor="hand2")
+                o.geometry(f"{r - l}x{b - t}+{l}+{t}")
+                tk.Label(o, text=str(m["n"]), bg=BG, fg=TEXT, font=("Segoe UI", 160, "bold")).pack(expand=True, pady=(0, 0))
+                tk.Label(o, text="Clique aqui para dar um apelido a esta tela   (Esc cancela)", bg=BG, fg=MUTED, font=("Segoe UI", 20)).pack(pady=(0, 120))
+
+                def pick(_e=None, m=m):
+                    close_overlays()
+                    rename(m)
+                for w in (o, *o.winfo_children()):
+                    w.bind("<Button-1>", pick)
+                o.bind("<Escape>", lambda _e: close_overlays())
+                o.focus_force()
+        refresh()
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(10, 0))
+        RoundButton(row, "Identificar telas", identify, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="left")
+        d.bind("<Destroy>", lambda e: close_overlays() if e.widget is d else None)
 
     def aliases_dialog(self):
         d = self._list_dialog("Apelidos de programas", 'Dê apelidos aos seus programas. Ex.: "whats 2" abre o WhatsApp que você escolher. Dê dois cliques num programa.')

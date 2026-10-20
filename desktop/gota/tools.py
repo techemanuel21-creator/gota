@@ -352,7 +352,8 @@ def monitors():
         user32.GetMonitorInfoW(handle, ctypes.byref(info))
         m = re.search(r"DISPLAY(\d+)", info.szDevice)
         r = info.rcMonitor
-        found.append({"n": int(m.group(1)) if m else 0, "rect": (r.left, r.top, r.right, r.bottom), "primary": bool(info.dwFlags & 1)})
+        found.append({"n": int(m.group(1)) if m else 0, "rect": (r.left, r.top, r.right, r.bottom), "primary": bool(info.dwFlags & 1),
+                      "key": f"{r.left},{r.top},{r.right - r.left},{r.bottom - r.top}"})
         return 1
     try:
         user32.EnumDisplayMonitors(None, None, proc(cb), 0)
@@ -418,10 +419,13 @@ def _screen_word(w):
     return any(difflib.SequenceMatcher(None, w, s).ratio() >= 0.6 for s in _SCREEN_WORDS)
 
 
-def parse_screen(text):
+def parse_screen(text, names=None):
     """Which screen the user named in plain words: 2, "all" or "other"; None when he did not say. Tolerant to speech-recognition slips
     ("primeira hotel" for "primeira tela"). The numbers are the ones Windows shows in Settings > Display."""
     t = norm(text)
+    for nick in sorted(names or {}, key=len, reverse=True):   # the nicknames he gave his screens ("notebook", "monitor grande") come first
+        if nick and re.search(r"\b" + re.escape(nick) + r"\b", t):
+            return names[nick]
     if re.search(r"\b(todas|todos|ambas|ambos)\b[^.]{0,12}\b(telas?|monitores|videos?)\b|\b(duas|dois|as 2|os 2)\b[^.]{0,6}\b(telas|monitores|videos)\b", t):
         return "all"
     for m in re.finditer(r"\b(primeir|segund|terceir|quart|quint)[oa]s?\s+(\w+)", t):
@@ -435,13 +439,14 @@ def parse_screen(text):
     return None
 
 
-def screens_note():
+def screens_note(nicks=None):
     """One line telling the model which screens exist and where the user is working; empty with a single screen."""
     mons = monitors()
     if len(mons) < 2:
         return ""
     cur = active_monitor(mons)
-    parts = ", ".join(f"tela {m['n']} ({m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
+    nicks = nicks or {}
+    parts = ", ".join(f"tela {m['n']}" + (f" apelidada de \"{nicks[m['n']]}\"" if nicks.get(m["n"]) else "") + f" ({m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
     return f"Telas (numeração do Windows): {parts}; a janela ativa dele está na tela {cur['n']}"
 
 

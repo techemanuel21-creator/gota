@@ -1,4 +1,4 @@
-# Gota
+﻿# Gota
 
 Assistente pessoal local e gratuito: um gato mordomo que vive no seu aparelho, funciona offline e conversa em português.
 
@@ -18,7 +18,7 @@ No PowerShell (sem precisar de administrador):
 irm https://raw.githubusercontent.com/techemanuel21-creator/gota/main/desktop/install.ps1 | iex
 ```
 
-Atualizar para a versão mais recente (mantém modelos, ambiente e seus dados):
+Atualizar (remove o programa antigo e baixa tudo de novo; mantém só os modelos de IA, o ambiente Python e seus dados em %APPDATA%\Gota: conversas, WhatsApp, Outlook e configurações):
 
 ```powershell
 irm https://raw.githubusercontent.com/techemanuel21-creator/gota/main/desktop/update.ps1 | iex
