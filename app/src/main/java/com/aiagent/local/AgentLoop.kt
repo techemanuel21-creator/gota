@@ -61,6 +61,11 @@ class AgentLoop(
                 """
                 Responda SEMPRE com um único objeto JSON válido, sem nenhum texto antes ou depois.
 
+                Regra de ouro: seja extremamente factual e rigoroso. Responda estritamente com base em fatos
+                conhecidos ou nos dados fornecidos nesta conversa. Se não souber a resposta exata ou a informação
+                não estiver clara, diga: "Não tenho informações suficientes para responder com certeza, $sir."
+                Sob hipótese alguma invente dados, datas, números, fontes, eventos ou nomes.
+
                 Como responder em texto:
                 - Responda exatamente o que foi perguntado, nada além disso, começando já pela resposta.
                 - Seja curto (1 ou 2 frases), com a elegância de um mordomo. Só se estenda se pedirem explicação.
@@ -604,7 +609,8 @@ class AgentLoop(
             - O 'Contexto' no fim pode estar desatualizado; só use se os trechos datados não bastarem.
             - Nunca mencione "trechos", "resultados", "pesquisa" ou sites, e não sugira onde conferir.
             - Não acrescente nada que não foi perguntado.
-            - Se nada responder, diga só: "Não encontrei essa informação agora, $sir."
+            - Seja estritamente factual: use apenas o que está nos trechos. Se eles não trouxerem a resposta com clareza,
+              diga só: "Não tenho informações suficientes para responder com certeza, $sir." Nunca invente dados, datas, fontes ou eventos.
             Responda em texto simples, sem JSON e sem listas.
         """.trimIndent()
         val user = buildString {

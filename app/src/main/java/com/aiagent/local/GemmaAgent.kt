@@ -34,8 +34,8 @@ class GemmaAgent private constructor(private val engine: Engine) {
     private var liveKey: String? = null
     private var liveChars = 0
 
-    // Low temperature so it follows instructions closely and rambles less.
-    private val sampler = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.3)
+    // Near-zero temperature: always the most probable answer, no "guessing" (0.1 keeps the JSON stable).
+    private val sampler = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.1)
 
     suspend fun chat(
         key: String,
