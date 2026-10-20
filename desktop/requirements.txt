@@ -8,3 +8,11 @@ vosk
 numpy
 torch
 executorch==1.5.1
+faster-whisper
+pypdf
+openpyxl
+python-docx
+fpdf2
+psutil
+msal
+playwright

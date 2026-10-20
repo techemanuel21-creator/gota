@@ -2,10 +2,10 @@
 import ctypes, io, json, queue, threading, time, urllib.request, zipfile
 from ctypes import wintypes
 from pathlib import Path
-from .store import ROOT
+from .store import MODELS, ROOT
 
 VOSK_URL = "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip"
-VOSK_DIR = ROOT / "models" / "vosk-pt"
+VOSK_DIR = MODELS / "vosk-pt"
 WAKE_GRAMMAR = json.dumps(["ei gota", "oi gota", "hey gota", "gota", "[unk]"])
 MALE_HINTS = ("daniel", "antonio", "helio", "ricardo", "felipe", "male")
 
@@ -15,7 +15,7 @@ def xml_escape(t):
 
 
 PIPER_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/pt/pt_BR/faber/medium/pt_BR-faber-medium.onnx"
-PIPER_DIR = ROOT / "models" / "piper"
+PIPER_DIR = MODELS / "piper"
 
 
 def ensure_piper_voice():
@@ -75,7 +75,7 @@ class Speaker:
         while True:
             text, done, gen = self.q.get()
             try:
-                if gen != self.generation:
+                if gen != self.generation or not text:   # an empty line only marks 'everything before me has been played'
                     continue
                 if piper:
                     audio = b"".join(c.audio_int16_bytes for c in piper.synthesize(text, syn_config=self.cfg))
@@ -98,13 +98,18 @@ class Speaker:
 
     def speak(self, text, done=None):
         import re
-        clean = re.sub(r"[*_#`>]", "", text)
+        clean = re.sub(r"```.*?(```|\Z)", " (o comando está no chat) ", text, flags=re.S)   # code is never read aloud
+        clean = re.sub(r"[*_#`>]", "", clean)
         clean = re.sub(r"[𐀀-􏿿☀-➿]", "", clean).strip()
         if not clean:
             if done:
                 done()
             return
         self.q.put((clean, done, self.generation))
+
+    def after(self, done):
+        """Calls done() once everything queued so far has been spoken."""
+        self.q.put(("", done, self.generation))
 
     def stop(self):
         """Cuts the speech short: pending lines are dropped and the one playing is silenced."""
@@ -121,6 +126,49 @@ class Speaker:
 
     def sapi_stop(self):
         pass
+
+
+def speakable(text):
+    """What is worth reading aloud: code blocks become one short remark. Stable while the text grows (the old part never changes)."""
+    import re
+    marker = " (o comando está no chat) "
+    s = re.sub(r"```.*?```", marker, text, flags=re.S)
+    cut = s.find("```")   # a block that is still being written
+    return s if cut < 0 else s[:cut] + marker
+
+
+class SentenceFeeder:
+    """Speaks a reply sentence by sentence while the model is still writing it, so the voice starts in a couple of seconds."""
+
+    def __init__(self, speaker):
+        import re
+        self.speaker, self.done, self.said = speaker, 0, ""
+        self.end = re.compile(r'[.!?…]["”)]*\s')
+
+    def feed(self, text):
+        s = speakable(text)
+        while True:
+            m = self.end.search(s, self.done)
+            if not m:
+                return
+            chunk = s[self.done:m.end()].strip()
+            self.done = m.end()
+            if chunk:
+                self.said += chunk
+                self.speaker.speak(chunk)
+
+    def finish(self, text, done=None):
+        """The reply is complete: speak what is left and call done() after the last word. If the final text is not what was streamed, start over."""
+        s = speakable(text)
+        if self.said and not s.replace(" ", "").startswith(self.said.replace(" ", "")):
+            self.speaker.stop()
+            self.done, self.said = 0, ""
+        rest = s[self.done:].strip()
+        self.done = len(s)
+        if rest:
+            self.speaker.speak(rest, done)
+        elif done:
+            self.speaker.after(done)
 
 
 def ensure_vosk(progress=lambda p: None):
@@ -203,6 +251,72 @@ class Listener:
             return f"O microfone \"{self.device_name}\" quase não capta som (nível {self.peak}). Confira se ele não está mudo e o volume de entrada, em Configurações > Sistema > Som."
         return f"Captei som em \"{self.device_name}\" mas não entendi nenhuma palavra. Fale um pouco mais perto e devagar."
 
+    WHISPER_SIZE = "small"
+    VOCAB = "Gota, Veeam, Windows, Linux, tela, cibersegurança, infraestrutura, backup, servidor, PowerShell, firewall, Active Directory."
+
+    whisper_downloading = False
+
+    def _whisper_dir(self):
+        """Folder of the downloaded Whisper model, or None while it is not on this computer yet."""
+        root = MODELS / "whisper"
+        for d in root.glob(f"models--*whisper-{self.WHISPER_SIZE}*/snapshots/*"):
+            if (d / "model.bin").exists():
+                return d
+        return None
+
+    def whisper_ready(self):
+        return self._whisper_dir() is not None
+
+    def download_whisper(self):
+        """Fetches the Whisper model in the background (about 480 MB, once). Until it is here, Vosk's text is used."""
+        if self.whisper_downloading or self.whisper_ready():
+            return
+        self.whisper_downloading = True
+
+        def work():
+            try:
+                from faster_whisper.utils import download_model
+                root = MODELS / "whisper"
+                root.mkdir(parents=True, exist_ok=True)
+                download_model(self.WHISPER_SIZE, cache_dir=str(root))
+            except Exception:
+                pass
+            finally:
+                self.whisper_downloading = False
+        threading.Thread(target=work, daemon=True).start()
+
+    def whisper(self):
+        if getattr(self, "_whisper", None) is None:
+            from faster_whisper import WhisperModel
+            folder = self._whisper_dir()
+            if folder is None:
+                raise RuntimeError("modelo Whisper ainda não baixado")
+            self._whisper = WhisperModel(str(folder), device="cpu", compute_type="int8", cpu_threads=8)
+        return self._whisper
+
+    def refine(self, audio: bytes, fallback: str) -> str:
+        """Re-transcribes the whole sentence with Whisper (far more accurate than Vosk); keeps Vosk's text if it fails."""
+        import numpy as np
+        if not fallback or len(audio) < self.RATE * 2 * 0.3 or not self.whisper_ready():  # never wait for a download in the middle of a sentence
+            return fallback
+        try:
+            x = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+            segs, _ = self.whisper().transcribe(x, language="pt", beam_size=5, vad_filter=True, initial_prompt=self.VOCAB, condition_on_previous_text=False)
+            text = " ".join(s.text.strip() for s in segs).strip()
+            if text and not text.lower().startswith(self.VOCAB[:12].lower()):
+                return text
+        except Exception:
+            pass
+        return fallback
+
+    def preload(self, progress=lambda p: None):
+        self._model(progress)
+        try:
+            if self.whisper_ready():
+                self.whisper()
+        except Exception:
+            pass
+
     def listen(self, on_partial=lambda t: None, silence=1.2, timeout=8.0, max_seconds=30.0, on_level=lambda p: None):
         """Waits for speech, returns the sentence once there is a pause (or "" if nobody spoke). Blocking."""
         from vosk import KaldiRecognizer
@@ -211,6 +325,7 @@ class Listener:
         self.peak = 0
         q = queue.Queue()
         started, last_voice, heard = time.time(), None, ""
+        buf = bytearray()
         with self._stream(q):
             while not self.cancel.is_set():
                 try:
@@ -220,10 +335,11 @@ class Listener:
                 now = time.time()
                 if data:
                     on_level(self.peak)
+                    buf += data
                 if data and rec.AcceptWaveform(data):
                     text = json.loads(rec.Result()).get("text", "")
                     if text:
-                        return text
+                        return self.refine(bytes(buf), text)
                 elif data:
                     part = json.loads(rec.PartialResult()).get("partial", "")
                     if part:
@@ -231,10 +347,8 @@ class Listener:
                         on_partial(part)
                 if last_voice is None and now - started > timeout:
                     return ""
-                if last_voice is not None and now - last_voice > silence:
-                    return json.loads(rec.FinalResult()).get("text", "") or heard
-                if now - started > max_seconds:
-                    return json.loads(rec.FinalResult()).get("text", "") or heard
+                if last_voice is not None and now - last_voice > silence or now - started > max_seconds:
+                    return self.refine(bytes(buf), json.loads(rec.FinalResult()).get("text", "") or heard)
         return ""
 
     def wait_for_wake_word(self, stop: threading.Event):

@@ -1,28 +1,7 @@
-# Android / Gradle build output
-/build/
-/app/build/
-.gradle/
-.kotlin/
-
-# Local machine config (SDK path is specific to this PC)
-local.properties
-
-# Android Studio / IDE
-.idea/
-*.iml
-.DS_Store
-
-# Scratch folder: downloaded tools, previews, the 2.5GB model copy, debug APKs — not project source
-/.tools/
-
-# Logs
-*.log
+# Two independent projects live here: mobile/ (Android) and desktop/ (Windows). Each has its own .gitignore.
 
 # Claude Code session state (not project source)
 .claude/
 
-# Desktop build output and caches
-desktop/dist/
-desktop/build/
-__pycache__/
-*.pyc
+# Third-party code downloaded only to study ideas (derived from proprietary code: never commit or ship it)
+references/

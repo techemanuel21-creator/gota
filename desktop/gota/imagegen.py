@@ -1,15 +1,32 @@
 """Draws pictures on this computer, offline, with the same SDXS-512 DreamShaper model as the phone app."""
 import json, re, threading, time, urllib.request
 from pathlib import Path
-from .store import ROOT
+from .store import MODELS, ROOT
 
 REPO = "https://huggingface.co/software-mansion/react-native-executorch-sdxs-512-dreamshaper/resolve/main/"
 TOK_REPO = "https://huggingface.co/IDKiro/sdxs-512-dreamshaper/resolve/main/tokenizer/"
-DIR = ROOT / "imagegen"
+DIR = MODELS / "imagegen"
 PTE = DIR / "sdxs_cpu.pte"
 PTE_URL = REPO + "xnnpack/sdxs_512_dreamshaper_xnnpack_fp32.pte"
 PTE_MB = 1679
-ALBUM = Path.home() / "Pictures" / "GOTA IA"
+def _pictures():
+    """The profile's Pictures folder as Windows knows it (it may be redirected, e.g. to OneDrive)."""
+    try:
+        import ctypes, uuid
+        from ctypes import wintypes
+        guid = uuid.UUID("{33E28130-4E1E-4676-835A-98395C3BC3BB}")  # FOLDERID_Pictures
+        raw_guid = (ctypes.c_byte * 16).from_buffer_copy(guid.bytes_le)
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(raw_guid), 0, None, ctypes.byref(out)) == 0:
+            path = Path(out.value)
+            ctypes.windll.ole32.CoTaskMemFree(out)
+            return path
+    except Exception:
+        pass
+    return Path.home() / "Pictures"
+
+
+ALBUM = _pictures() / "GOTA AI"   # created on first use
 TIMESTEP, A, B = 999, 14.642591, -14.579279  # the single-step scheduler as a linear mix
 
 PAINTERLY = re.compile(r"\b(oil painting|painting|watercolou?r|impressionis\w*|brush ?strokes?|gouache|acrylic)\b")
@@ -26,6 +43,11 @@ def suffix_for(prompt):
 
 class NotReady(Exception):
     pass
+
+
+def _asset(name):
+    """A file that ships with the models (the full-quality image decoder lives next to the painter)."""
+    return DIR / name
 
 
 class ClipTokenizer:
@@ -133,6 +155,19 @@ class ImageGen:
             on_done(ok)
         threading.Thread(target=work, daemon=True).start()
 
+    def _decode_full(self, latents):
+        """The full Stable Diffusion image decoder (cleaner edges and eyes than the tiny one built into the painter)."""
+        vae = _asset("vae_decoder_fp32.pte")
+        if not vae.exists():
+            return None
+        try:
+            from executorch.runtime import Runtime
+            if getattr(self, "vae_method", None) is None:
+                self.vae_method = Runtime.get().load_program(str(vae)).load_method("forward")
+            return self.vae_method.execute([latents])[0][0].clamp(0, 1)
+        except Exception:
+            return None
+
     def generate(self, prompt, on_status=lambda s: None) -> Path:
         if not self.ready():
             if self.downloading:
@@ -153,7 +188,10 @@ class ImageGen:
             x = torch.randn(1, 4, 64, 64)
             eps = self.program.load_method("denoise").execute([x, torch.tensor([TIMESTEP], dtype=torch.int64), emb])[0]
             on_status("Terminando a imagem...")
-            rgb = self.program.load_method("decode").execute([A * x + B * eps])[0][0].clamp(0, 1)
+            latents = A * x + B * eps
+            rgb = self._decode_full(latents)
+            if rgb is None:
+                rgb = self.program.load_method("decode").execute([latents])[0][0].clamp(0, 1)
             arr = (rgb.permute(1, 2, 0).numpy() * 255 + 0.5).astype(np.uint8)
             img = Image.fromarray(arr).resize((1024, 1024), Image.BICUBIC).filter(ImageFilter.UnsharpMask(radius=1.6, percent=80, threshold=2))
             ALBUM.mkdir(parents=True, exist_ok=True)

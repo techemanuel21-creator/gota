@@ -1,11 +1,16 @@
 """Everything Gota remembers, as small JSON files in %APPDATA%/Gota (no audio is stored)."""
-import json, os, time, uuid
+import json, os, sys, time, uuid
 from pathlib import Path
 
 ROOT = Path(os.environ.get("GOTA_HOME") or (Path(os.environ.get("APPDATA", Path.home())) / "Gota"))
 ROOT.mkdir(parents=True, exist_ok=True)
 (ROOT / "chats").mkdir(exist_ok=True)
 VOICE_CHAT = "voice"
+
+# The program folder (next to main.py, or next to Gota.exe once packaged) holds everything that is NOT the user's data:
+# the AI models ship inside it, so nothing is downloaded on first use. The user's chats, settings and tokens stay in ROOT.
+APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
+MODELS = Path(os.environ.get("GOTA_MODELS") or (APP_DIR / "models"))
 
 
 def _read(path, default):
@@ -80,20 +85,31 @@ class Chats:
         _write(self.path(cid), chat)
         return chat
 
-    def create(self, title="Nova conversa"):
-        return self._new(uuid.uuid4().hex, title)
+    def create(self, title="Nova conversa", project=None):
+        chat = self._new(uuid.uuid4().hex, title)
+        if project:   # a coding chat tied to a project folder
+            chat["project"] = str(project)
+            _write(self.path(chat["id"]), chat)
+        return chat
 
     def voice(self):
         return self.get(VOICE_CHAT) or self._new(VOICE_CHAT, "Conversas por voz")
 
-    def append(self, cid, role, text, image=None):
+    def append(self, cid, role, text, image=None, steps=None):
         chat = self.get(cid) or self._new(cid, "Nova conversa")
-        chat["messages"].append({"role": role, "text": text, "image": image, "time": time.time()})
+        msg = {"role": role, "text": text, "image": image, "time": time.time()}
+        if steps:
+            msg["steps"] = steps   # what the agent did for this reply
+        chat["messages"].append(msg)
         chat["updated"] = time.time()
-        if chat["title"] == "Nova conversa" and role == "user" and text.strip():
-            chat["title"] = text[:40] + ("…" if len(text) > 40 else "")
         _write(self.path(cid), chat)
         return chat
+
+    def set_title(self, cid, title):
+        chat = self.get(cid)
+        if chat:
+            chat["title"] = title
+            _write(self.path(cid), chat)
 
     def list(self):
         chats = [c for c in (_read(p, None) for p in (ROOT / "chats").glob("*.json")) if c]
@@ -107,7 +123,7 @@ class Settings:
     path = ROOT / "settings.json"
 
     def __init__(self):
-        self.d = {"model_path": "", "hotkey": "ctrl+alt+g", "hey_gota": False, "aliases": {}, "tutorial": False, "current_chat": ""}
+        self.d = {"projects": [], "vscode_server": False, "model_path": "", "hotkey": "ctrl+alt+g", "hey_gota": False, "aliases": {}, "tutorial": False, "current_chat": ""}
         self.d.update(_read(self.path, {}))
 
     def save(self): _write(self.path, self.d)

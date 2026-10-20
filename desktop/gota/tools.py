@@ -93,6 +93,22 @@ def _bing(query):
     return http("https://www.bing.com/search?q=" + urllib.parse.quote(query) + "&setlang=pt-BR&cc=BR&mkt=pt-BR&setmkt=pt-BR").decode("utf-8", "ignore")
 
 
+def _ddg(query):
+    """DuckDuckGo's plain HTML results as [(snippet, url)]: the second search engine, used when Bing gives nothing."""
+    page = http("https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query) + "&kl=br-pt", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}).decode("utf-8", "ignore")
+    out = []
+    for part in re.split(r'<div class="[^"]*results_links[^"]*"', page)[1:]:
+        link = re.search(r'class="result__a"[^>]*href="([^"]+)"', part)
+        snip = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', part, flags=re.S)
+        if not link:
+            continue
+        href = link.group(1)
+        m = re.search(r"uddg=([^&]+)", href)
+        url = urllib.parse.unquote(m.group(1)) if m else ("https:" + href if href.startswith("//") else href)
+        out.append((_strip(snip.group(1)) if snip else "", url))
+    return out
+
+
 def web_search(query, max_snippets=8, max_pages=2):
     """Returns (snippets newest first, page texts). Searches the question and its core words, merges, newest first. Blocking."""
     queries = [query] + ([core_query(query)] if core_query(query) != query else [])
@@ -109,6 +125,15 @@ def web_search(query, max_snippets=8, max_pages=2):
                 seen.add(text)
                 snippets.append(_dated(text))
             blocks.append(b)
+    if not blocks:   # Bing gave nothing (blocked, new layout...): ask DuckDuckGo
+        try:
+            for snip, url in _ddg(query)[:8]:
+                if snip and snip not in seen:
+                    seen.add(snip)
+                    snippets.append(_dated(snip))
+                blocks.append(f'<li><a href="{url}"></a></li>')
+        except Exception:
+            pass
     snippets = [s for s, _ in sorted(snippets, key=lambda x: x[1])][:max_snippets]
     keywords = [w for w in norm(core_query(query)).split() if len(w) > 3]
     pages = []
@@ -306,3 +331,169 @@ def calendar_events(day_offset=0):
         return [tuple(line.split("|", 1)) for line in out.stdout.splitlines() if "|" in line]
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------- monitors
+def monitors():
+    """The connected screens, numbered like Windows does (Settings > Display): [{n, rect=(l,t,r,b), primary, where}]."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+
+    class INFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD), ("szDevice", ctypes.c_wchar * 32)]
+    proc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+    user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    found = []
+
+    def cb(handle, dc, rect, lparam):
+        info = INFO()
+        info.cbSize = ctypes.sizeof(INFO)
+        user32.GetMonitorInfoW(handle, ctypes.byref(info))
+        m = re.search(r"DISPLAY(\d+)", info.szDevice)
+        r = info.rcMonitor
+        found.append({"n": int(m.group(1)) if m else 0, "rect": (r.left, r.top, r.right, r.bottom), "primary": bool(info.dwFlags & 1)})
+        return 1
+    try:
+        user32.EnumDisplayMonitors(None, None, proc(cb), 0)
+    except Exception:
+        return []
+    if len({m["n"] for m in found}) != len(found) or 0 in {m["n"] for m in found}:  # no usable Windows numbers: left to right
+        for i, m in enumerate(sorted(found, key=lambda m: (m["rect"][0], m["rect"][1])), 1):
+            m["n"] = i
+    found.sort(key=lambda m: m["n"])
+    main = next((m for m in found if m["primary"]), found[0] if found else None)
+    for m in found:
+        l, t, r, b = m["rect"]
+        if m is main:
+            m["where"] = "principal"
+        else:
+            ml, mt, mr, mb = main["rect"]
+            m["where"] = "à direita da principal" if l >= mr else "à esquerda da principal" if r <= ml else "acima da principal" if b <= mt else "abaixo da principal"
+    return found
+
+
+def cursor_monitor(mons):
+    import ctypes
+    from ctypes import wintypes
+    pt = wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    for m in mons:
+        l, t, r, b = m["rect"]
+        if l <= pt.x < r and t <= pt.y < b:
+            return m
+    return mons[0] if mons else None
+
+
+def screens_note():
+    """One line telling the model which screens exist and where the mouse is; empty with a single screen."""
+    mons = monitors()
+    if len(mons) < 2:
+        return ""
+    cur = cursor_monitor(mons)
+    parts = ", ".join(f"tela {m['n']} ({m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
+    return f"Telas: {parts}; o cursor está na tela {cur['n']}"
+
+
+# ---------------------------------------------------------------------- screen capture and reading
+def grab_rect(left, top, right, bottom):
+    """A picture of that rectangle of the virtual desktop, taken straight from Windows (BitBlt) in the same pixel coordinates that
+    monitors() reports, so the right monitor is always the one captured."""
+    import ctypes
+    from ctypes import wintypes
+    from PIL import Image
+    u, g = ctypes.windll.user32, ctypes.windll.gdi32
+    vp = ctypes.c_void_p
+    u.GetDC.restype, u.GetDC.argtypes = vp, [vp]
+    u.ReleaseDC.argtypes = [vp, vp]
+    g.CreateCompatibleDC.restype, g.CreateCompatibleDC.argtypes = vp, [vp]
+    g.CreateCompatibleBitmap.restype, g.CreateCompatibleBitmap.argtypes = vp, [vp, ctypes.c_int, ctypes.c_int]
+    g.SelectObject.restype, g.SelectObject.argtypes = vp, [vp, vp]
+    g.BitBlt.argtypes = [vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp, ctypes.c_int, ctypes.c_int, wintypes.DWORD]
+    g.GetDIBits.argtypes = [vp, vp, ctypes.c_uint, ctypes.c_uint, vp, vp, ctypes.c_uint]
+    g.DeleteObject.argtypes = [vp]
+    g.DeleteDC.argtypes = [vp]
+    w, h = int(right - left), int(bottom - top)
+    if w <= 0 or h <= 0:
+        raise ValueError("área vazia")
+
+    class BIH(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD), ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG), ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD), ("biClrImportant", wintypes.DWORD)]
+    screen_dc = u.GetDC(None)
+    mem = g.CreateCompatibleDC(screen_dc)
+    bmp = g.CreateCompatibleBitmap(screen_dc, w, h)
+    old = g.SelectObject(mem, bmp)
+    try:
+        if not g.BitBlt(mem, 0, 0, w, h, screen_dc, int(left), int(top), 0x00CC0020 | 0x40000000):   # SRCCOPY | CAPTUREBLT (layered windows too)
+            raise OSError("BitBlt falhou")
+        bih = BIH(ctypes.sizeof(BIH), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)   # negative height: top-down rows
+        buf = ctypes.create_string_buffer(w * h * 4)
+        if not g.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(bih), 0):
+            raise OSError("GetDIBits falhou")
+        return Image.frombuffer("RGB", (w, h), buf, "raw", "BGRX", 0, 1).copy()
+    finally:
+        g.SelectObject(mem, old)
+        g.DeleteObject(bmp)
+        g.DeleteDC(mem)
+        u.ReleaseDC(None, screen_dc)
+
+
+_OCR_PS = r"""param([string]$Path)
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bmp = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { exit 2 }
+$result = Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+"# idioma: " + $engine.RecognizerLanguage.LanguageTag
+$result.Lines | ForEach-Object { $_.Text }
+"""
+
+
+def ocr_image(path, scale=2):
+    """The text on a picture, read offline by Windows' own OCR (the languages installed for the user, e.g. Portuguese and English).
+    Small text reads much better when the picture is enlarged first. Returns "" if nothing could be read."""
+    import subprocess, tempfile
+    from PIL import Image
+    from .store import ROOT
+    src = Path(path)
+    try:
+        im = Image.open(src)
+        if scale > 1 and im.width * scale <= 6000 and im.height * scale <= 6000:
+            tmp = Path(tempfile.gettempdir()) / "gota_ocr.png"
+            im.convert("RGB").resize((im.width * scale, im.height * scale), Image.LANCZOS).save(tmp)
+            src = tmp
+        script = ROOT / "ocr.ps1"
+        script.write_text(_OCR_PS, "utf-8-sig")
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Path", str(src)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, creationflags=0x08000000)
+        return "\n".join(l for l in r.stdout.splitlines() if l.strip() and not l.startswith("# idioma"))
+    except Exception:
+        return ""
+
+
+PROBLEM = re.compile(r"(error|erro\b|failed|falha|fail\b|warning|aviso|exception|aborted|abortad|terminated|denied|negado|timeout|timed out|cannot|can't|unable|"
+                     r"n[aã]o foi poss[ií]vel|critical|cr[ií]tico|0x[0-9a-f]{4,8}|event id|corrupt|unreachable|refused|disconnected)", re.I)
+
+
+def problem_lines(text, limit=4):
+    """The lines of an on-screen text that look like an error or warning (first few, without repeats)."""
+    seen, out = set(), []
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) > 14 and PROBLEM.search(line) and line.lower() not in seen:
+            seen.add(line.lower())
+            out.append(line)
+            if len(out) >= limit:
+                break
+    return out

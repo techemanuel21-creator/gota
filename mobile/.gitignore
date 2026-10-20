@@ -1,0 +1,18 @@
+# Android / Gradle build output
+/build/
+/app/build/
+.gradle/
+.kotlin/
+
+# Local machine config (the SDK path is specific to this PC)
+local.properties
+
+# Android Studio / IDE
+.idea/
+*.iml
+.DS_Store
+
+# Scratch folder: Gradle distribution, debug APKs and the model copy used for adb pushes (not project source)
+/.tools/
+
+*.log

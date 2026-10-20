@@ -1,0 +1,12 @@
+# Build output, Python environment and caches
+dist/
+build/
+.venv/
+__pycache__/
+*.pyc
+
+# AI models and engines that ship next to the program (several GB; see models/README.md)
+models/*
+!models/README.md
+
+*.log
