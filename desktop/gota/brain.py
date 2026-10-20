@@ -707,7 +707,8 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                       "Quando a tela mostrar erro, falha, aviso ou algo anormal, SEMPRE explique como especialista: 1) o que está acontecendo, citando o texto exato da tela; "
                       "2) a causa provável; 3) como corrigir, em passos e com comandos quando houver; 4) o que verificar se não resolver. Use o MATERIAL DA BASE quando ajudar. "
                       "Nunca invente o que não está na tela; se algo não estiver legível, diga. Português do Brasil, chamando-o de \"{sir}\". "
-                      "SEJA BREVE: responda em até 4 frases curtas (o que está acontecendo, citando o texto do erro, a causa provável e a ação principal para corrigir) e termine perguntando "
+                      "NOMES: copie nomes de jobs, servidores e mensagens EXATAMENTE como aparecem no texto lido (principalmente na LINHA SELECIONADA); se não conseguir ler o nome com certeza, diga \"o job selecionado\" e NUNCA invente um nome. A causa deve vir das linhas de erro da tela (ex.: Error: ...), não de suposição pelo status. "
+                      "SEJA BREVE: responda em até 4 frases curtas (comece citando o nome do job ou item selecionado e o texto exato do erro, a causa provável e a ação principal para corrigir) e termine perguntando "
                       "se ele quer os passos detalhados. Só detalhe passos, comandos e verificações se ele pedir. Comandos (quando pedidos) em blocos ```.")
 
     def look_at_screen(self, question, spoken=False, history=(), screen=None, image_path=None):
@@ -739,6 +740,15 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
 
         # what Gota already knows about what is on screen (and, for an unknown error, the documentation from the internet)
         problems = tools.problem_lines(seen)
+        row = ""
+        row_img = tools.selected_row_crop(full)   # the highlighted line of a list (e.g. the selected Veeam job), magnified and read by the vision model: exact names
+        if row_img:
+            self.on_status("Lendo o item selecionado...")
+            try:
+                row = (llm.one_shot("Você lê texto de imagens de telas. Responda apenas com o texto exato.",
+                                    "Copie literalmente o texto desta linha de tabela (nome, tipo, status, resultado).", str(row_img)) or "").strip()[:400]
+            except Exception:
+                row = ""
         if not problems:   # the OCR could not read the (small) error text: ask the vision model to quote it, so the lookup has something to match
             self.on_status("Procurando a mensagem de erro...")
             try:
@@ -770,6 +780,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         try:
             recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {t[:300]}" for r, t in list(history)[-4:] if t.strip())
             ask = ((f"Conversa até agora:\n{recent}\n\n" if recent else "") + f"O usuário disse: {question or 'Descreva e analise o que está na tela.'}\n"
+                   + (f"\nLINHA SELECIONADA NA TELA (lida ampliada: o nome do job/item está aqui): {row}\n" if row else "")
                    + (f"\nTEXTO LIDO DA TELA (OCR):\n{seen}\n" if seen else "") + (f"\nMATERIAL DA BASE:\n{material[:2400]}\n" if material else "")
                    + "\nEntenda o que ele quer saber a partir da frase dele e responda.")
             out = llm.one_shot(system, ask, str(path), on_delta=self.stream_to_ui())

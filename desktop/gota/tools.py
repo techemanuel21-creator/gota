@@ -552,3 +552,37 @@ def problem_lines(text, limit=4):
             if len(out) >= limit:
                 break
     return out
+
+def selected_row_crop(image_path, max_width=820, scale=3):
+    """A magnified picture of the highlighted (selected) row of a list on screen (its first `max_width` pixels, enlarged `scale` times), saved as a
+    file; None when no highlighted row is found (only the light-blue Windows selection is recognised). The vision model reads names such as
+    JOB_BACKUP_TAPE_NOD01_B from it exactly, which it cannot do from the whole screen."""
+    try:
+        import tempfile
+        import numpy as np
+        from PIL import Image
+        im = Image.open(image_path).convert("RGB")
+        a = np.asarray(im).astype(int)
+        r, g, b = a[..., 0], a[..., 1], a[..., 2]
+        mask = (abs(r - 205) < 28) & (abs(g - 232) < 22) & (b > 232)
+        rows = np.where(mask.mean(axis=1) > 0.4)[0]
+        if not len(rows):
+            return None
+        bands, start = [], rows[0]
+        for prev, cur in zip(rows, list(rows[1:]) + [None]):
+            if cur is None or cur - prev > 2:
+                bands.append((start, prev))
+                start = cur
+        bands = [bd for bd in bands if 8 <= bd[1] - bd[0] + 1 <= 70]
+        if not bands:
+            return None
+        top, bottom = max(bands, key=lambda bd: bd[1] - bd[0])
+        cols = np.where(mask[top:bottom + 1].mean(axis=0) > 0.5)[0]
+        left = int(cols[0]) if len(cols) else 0
+        crop = im.crop((left, max(0, top - 3), min(im.width, left + max_width), min(im.height, bottom + 4)))
+        crop = crop.resize((crop.width * scale, crop.height * scale), Image.LANCZOS)
+        path = Path(tempfile.gettempdir()) / "gota_selected_row.png"
+        crop.save(path)
+        return path
+    except Exception:
+        return None
