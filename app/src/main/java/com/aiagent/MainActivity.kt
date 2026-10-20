@@ -704,8 +704,7 @@ class MainActivity : AppCompatActivity() {
             scaleType = ImageView.ScaleType.FIT_CENTER
             clipToOutline = true
             setBackgroundResource(R.drawable.bubble_agent)
-            // The pictures are big (2048 px): load a reduced copy for the chat, the gallery keeps the original.
-            runCatching { setImageBitmap(decodeScaled(uri, dp(480))) }
+            runCatching { setImageURI(uri) }
             if (source.startsWith("content:")) setOnClickListener {
                 runCatching {
                     startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
@@ -714,17 +713,6 @@ class MainActivity : AppCompatActivity() {
         }
         chatContainer.addView(image, bubbleParams(isUser))
         chatScroll.post { chatScroll.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    /** Decodes [uri] at a reduced size (at most about [maxSide] px on the long side) to save memory. */
-    private fun decodeScaled(uri: Uri, maxSide: Int): Bitmap? {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-        var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
-        return contentResolver.openInputStream(uri)?.use {
-            BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-        }
     }
 
     private fun bubbleParams(isUser: Boolean) =

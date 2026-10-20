@@ -540,7 +540,7 @@ class AgentLoop(
         onStatus("Pintando a imagem...")
         ImageGen.rememberPrompt(context, prompt)
         try {
-            val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) { stage -> onStatus(stage) } }
+            val uri = withContext(Dispatchers.IO) { ImageGen.generate(context, prompt) }
             onReply(
                 "Aqui está, $sir. Já guardei na galeria, no álbum ${ImageGen.ALBUM}. " +
                     "Se não ficou bom, peça \"outra\" que eu tento de novo.",
