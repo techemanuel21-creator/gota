@@ -506,7 +506,8 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                     pick = next((m for m in mons if str(m["n"]) == want), None) if want.isdigit() else active
                 if pick is None:
                     raise ValueError(f"Não encontrei a tela {want}, {sir}; vejo {len(mons)} telas conectadas (de 1 a {max(m['n'] for m in mons)}).")
-                rect, which = pick["rect"], f"a tela {pick['n']} ({pick['where']})"
+                nick = self.screen_nicks().get(pick["n"])
+                rect, which = pick["rect"], (f"a tela \"{nick}\" (tela {pick['n']}, {pick['where']})" if nick else f"a tela {pick['n']} ({pick['where']})")
         if rect is None and mons:
             rect = mons[0]["rect"]   # a single screen: still its exact rectangle
         self.hide_window(True)

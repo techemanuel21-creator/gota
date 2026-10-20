@@ -1442,8 +1442,8 @@ class App(tk.Tk):
                 row = tk.Frame(box, bg=SURFACE2)
                 row.pack(fill="x", pady=4)
                 w, h = m["rect"][2] - m["rect"][0], m["rect"][3] - m["rect"][1]
-                tk.Label(row, text=f"Tela {m['n']}  ·  {m['where']}  ·  {w}x{h}", bg=SURFACE2, fg=TEXT, font=FONT).pack(side="left", padx=12, pady=10)
-                tk.Label(row, text=("🏷 " + nick[m["key"]]) if nick.get(m["key"]) else "sem apelido", bg=SURFACE2, fg=ACCENT if nick.get(m["key"]) else MUTED, font=("Segoe UI", 10)).pack(side="left", padx=8)
+                tk.Label(row, text=nick.get(m["key"]) or f"Tela {m['n']}", bg=SURFACE2, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(side="left", padx=12, pady=10)
+                tk.Label(row, text=(f"tela {m['n']}  ·  " if nick.get(m["key"]) else "sem apelido  ·  ") + f"{m['where']}  ·  {w}x{h}", bg=SURFACE2, fg=MUTED, font=("Segoe UI", 10)).pack(side="left", padx=4)
                 RoundButton(row, "Apelido", lambda m=m: rename(m), parent_bg=SURFACE2).pack(side="right", padx=8, pady=6)
 
         def identify():
@@ -1457,7 +1457,7 @@ class App(tk.Tk):
                 o.attributes("-alpha", 0.88)
                 o.configure(bg=BG, cursor="hand2")
                 o.geometry(f"{r - l}x{b - t}+{l}+{t}")
-                tk.Label(o, text=str(m["n"]), bg=BG, fg=TEXT, font=("Segoe UI", 160, "bold")).pack(expand=True, pady=(0, 0))
+                tk.Label(o, text=names().get(m["key"]) or str(m["n"]), bg=BG, fg=TEXT, font=("Segoe UI", 110, "bold")).pack(expand=True, pady=(0, 0))
                 tk.Label(o, text="Clique aqui para dar um apelido a esta tela   (Esc cancela)", bg=BG, fg=MUTED, font=("Segoe UI", 20)).pack(pady=(0, 120))
 
                 def pick(_e=None, m=m):

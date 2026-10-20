@@ -446,8 +446,8 @@ def screens_note(nicks=None):
         return ""
     cur = active_monitor(mons)
     nicks = nicks or {}
-    parts = ", ".join(f"tela {m['n']}" + (f" apelidada de \"{nicks[m['n']]}\"" if nicks.get(m["n"]) else "") + f" ({m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
-    return f"Telas (numeração do Windows): {parts}; a janela ativa dele está na tela {cur['n']}"
+    parts = ", ".join((f"\"{nicks[m['n']]}\" (tela {m['n']}, " if nicks.get(m["n"]) else f"tela {m['n']} (") + f"{m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
+    return f"Telas (numeração do Windows): {parts}; a janela ativa dele está em {(chr(34) + nicks[cur['n']] + chr(34)) if nicks.get(cur['n']) else 'tela ' + str(cur['n'])}" + ("; chame as telas pelo APELIDO, nunca pelo número" if nicks else "")
 
 
 # ---------------------------------------------------------------------- screen capture and reading
