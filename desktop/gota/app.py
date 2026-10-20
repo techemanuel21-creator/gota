@@ -406,15 +406,17 @@ class App(tk.Tk):
     def _voice_turn(self):
         sp = self.get_speaker()
         try:
-            heard = self.listener.listen(lambda p: self.ui(lambda: self.overlay.set(f"“{p}”")), silence=1.3, timeout=8)
+            heard = self.listener.listen(lambda p: self.ui(lambda: self.overlay.set(f"“{p}”")), silence=1.3, timeout=8,
+                                         on_level=lambda pk: self.ui(lambda: self.overlay.set(f"Ouvindo… 🎙 {'▮' * min(8, pk // 600)}{'▯' * (8 - min(8, pk // 600))}") if not self.voice_question else None))
         except Exception as e:
             self.ui(lambda: self.overlay.set(f"Perdão, não consegui usar o microfone: {e}", "anim_cat_idle"))
             self.ui(self.overlay.hide_later, 4000)
             self.busy = False
             return
         if not heard:
-            self.ui(lambda: self.overlay.set("Perdão, não ouvi. É só me chamar de novo.", "anim_cat_idle"))
-            self.ui(self.overlay.hide_later, 1800)
+            why = self.listener.explain_silence()
+            self.ui(lambda: self.overlay.set(f"Perdão, não ouvi. {why}", "anim_cat_idle"))
+            self.ui(self.overlay.hide_later, 7000)
             self.busy = False
             return
         text = brain_mod.strip_wake_word(heard)
@@ -687,6 +689,7 @@ class CallWindow(tk.Toplevel):
             return
         if not heard:
             self.silent += 1
+            self.ui(lambda: self.caption.configure(text=self.app.listener.explain_silence() if self.silent >= 2 else "", fg=MUTED))
             if self.silent >= 6:
                 return self.say(f"Vou desligar, então, {self.sir}. Quando precisar, é só me ligar.", self.hang_up_threadsafe)
             if self.silent == 3:

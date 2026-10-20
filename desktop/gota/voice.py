@@ -140,13 +140,38 @@ def ensure_vosk(progress=lambda p: None):
     return ensure_vosk()
 
 
+def apply_gain(samples, target_peak=9000.0, max_gain=40.0):
+    """Automatic volume for a quiet microphone: scales a block so its loudest part reaches target_peak. Returns (int16 array, gain)."""
+    import numpy as np
+    x = samples.astype(np.float32)
+    peak = float(np.percentile(np.abs(x), 99.5)) if len(x) else 0.0
+    gain = 1.0 if peak < 40 else min(max_gain, max(1.0, target_peak / peak))  # below 40 it is just hiss: don't boost it
+    return np.clip(x * gain, -32768, 32767).astype(np.int16), gain
+
+
+def default_microphone():
+    """Name of the microphone Windows uses right now (re-read each time, so changing the default in Windows is followed)."""
+    import sounddevice as sd
+    try:
+        sd._terminate()
+        sd._initialize()
+        idx = sd.default.device[0]
+        if idx is None or idx < 0:
+            idx = sd.query_hostapis(0)["default_input_device"]
+        return idx, sd.query_devices(idx)["name"]
+    except Exception:
+        return None, "microfone padrão"
+
+
 class Listener:
-    """Microphone → text, offline. Used for dictation, voice questions, calls and the 'Hey Gota' wake word."""
+    """Microphone → text, offline. Always uses the microphone Windows has as default at that moment."""
     RATE = 16000
 
     def __init__(self):
         self.model = None
         self.cancel = threading.Event()
+        self.device_name = ""
+        self.peak = 0
 
     def _model(self, progress=lambda p: None):
         if self.model is None:
@@ -158,21 +183,43 @@ class Listener:
     def preload(self, progress=lambda p: None):
         self._model(progress)
 
-    def listen(self, on_partial=lambda t: None, silence=1.2, timeout=8.0, max_seconds=30.0):
-        """Waits for speech, returns the sentence once there is a pause (or "" if nobody spoke). Blocking."""
+    def _stream(self, q):
         import sounddevice as sd
+        idx, self.device_name = default_microphone()
+
+        def cb(data, frames, t, status):
+            q.put(bytes(data))
+        return sd.RawInputStream(samplerate=self.RATE, blocksize=3200, dtype="int16", channels=1, device=idx, callback=cb)
+
+    def _block(self, data):
+        """Amplifies a quiet block and remembers the loudest level heard (to explain a silent microphone)."""
+        import numpy as np
+        out, gain = apply_gain(np.frombuffer(data, dtype=np.int16))
+        self.peak = max(self.peak, int(np.abs(np.frombuffer(data, dtype=np.int16)).max(initial=0)))
+        return out.tobytes()
+
+    def explain_silence(self):
+        if self.peak < 60:
+            return f"O microfone \"{self.device_name}\" quase não capta som (nível {self.peak}). Confira se ele não está mudo e o volume de entrada, em Configurações > Sistema > Som."
+        return f"Captei som em \"{self.device_name}\" mas não entendi nenhuma palavra. Fale um pouco mais perto e devagar."
+
+    def listen(self, on_partial=lambda t: None, silence=1.2, timeout=8.0, max_seconds=30.0, on_level=lambda p: None):
+        """Waits for speech, returns the sentence once there is a pause (or "" if nobody spoke). Blocking."""
         from vosk import KaldiRecognizer
         rec = KaldiRecognizer(self._model(), self.RATE)
         self.cancel.clear()
+        self.peak = 0
         q = queue.Queue()
         started, last_voice, heard = time.time(), None, ""
-        with sd.RawInputStream(samplerate=self.RATE, blocksize=4000, dtype="int16", channels=1, callback=lambda d, f, t, s: q.put(bytes(d))):
+        with self._stream(q):
             while not self.cancel.is_set():
                 try:
-                    data = q.get(timeout=0.3)
+                    data = self._block(q.get(timeout=0.3))
                 except queue.Empty:
                     data = b""
                 now = time.time()
+                if data:
+                    on_level(self.peak)
                 if data and rec.AcceptWaveform(data):
                     text = json.loads(rec.Result()).get("text", "")
                     if text:
@@ -192,14 +239,13 @@ class Listener:
 
     def wait_for_wake_word(self, stop: threading.Event):
         """Blocks until someone says 'Hey Gota' (or stop is set). Returns True when heard."""
-        import sounddevice as sd
         from vosk import KaldiRecognizer
         rec = KaldiRecognizer(self._model(), self.RATE, WAKE_GRAMMAR)
         q = queue.Queue()
-        with sd.RawInputStream(samplerate=self.RATE, blocksize=4000, dtype="int16", channels=1, callback=lambda d, f, t, s: q.put(bytes(d))):
+        with self._stream(q):
             while not stop.is_set():
                 try:
-                    data = q.get(timeout=0.3)
+                    data = self._block(q.get(timeout=0.3))
                 except queue.Empty:
                     continue
                 if rec.AcceptWaveform(data):
