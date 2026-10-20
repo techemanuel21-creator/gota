@@ -1,6 +1,7 @@
 """WhatsApp inside Gota: you scan the QR code once in a window Gota opens (WhatsApp Web), and from then on Gota can send messages and
 pictures to your contacts by name. The session lives only in a private Edge profile on this computer (%APPDATA%/Gota/whatsapp).
 Unofficial: it drives WhatsApp Web like a person would, so WhatsApp's page changes can break it."""
+import re, unicodedata
 import ctypes, shutil, struct, time
 from pathlib import Path
 from .store import ROOT
@@ -9,6 +10,38 @@ PROFILE = ROOT / "whatsapp"
 URL = "https://web.whatsapp.com/"
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
 
+
+
+def _phon(word):
+    """A rough sound-alike key for a name, so spellings such as Emanuel / Emmanuel / Emanoel compare equal."""
+    w = unicodedata.normalize("NFKD", word.lower()).encode("ascii", "ignore").decode()
+    w = re.sub(r"[^a-z]", "", w)
+    for a, b in (("ph", "f"), ("th", "t"), ("ck", "k"), ("ch", "x"), ("y", "i"), ("w", "u"), ("k", "c"), ("oe", "ue"), ("h", "")):
+        w = w.replace(a, b)
+    return re.sub(r"(.)\1+", r"\1", w)
+
+
+def name_variants(contact, names=()):
+    """The contact as asked first, then likely spellings: the owner's own spelling when the name sounds like his, doubled or single letters,
+    ph/f, y/i, w/u. At most 8, no repeats."""
+    contact = " ".join(contact.split())
+    out = [contact]
+    words = contact.split()
+    for known in names:
+        for k in str(known).split():
+            for i, w in enumerate(words):
+                if _phon(w) == _phon(k) and w.lower() != k.lower():
+                    out.append(" ".join(words[:i] + [k.capitalize() if w[:1].isupper() else k] + words[i + 1:]))
+    out.append(re.sub(r"(.)\1+", r"\1", contact, flags=re.I))
+    for a, b in (("mm", "m"), ("m", "mm"), ("nn", "n"), ("n", "nn"), ("ph", "f"), ("f", "ph"), ("y", "i"), ("i", "y"), ("w", "u"), ("th", "t"), ("oe", "ue"), ("ue", "oe")):
+        v = re.sub(a, b, contact, count=1, flags=re.I)
+        out.append(v)
+    seen, res = set(), []
+    for v in out:
+        if v.lower() not in seen:
+            seen.add(v.lower())
+            res.append(v)
+    return res[:8]
 
 class NotConnected(Exception):
     pass
@@ -129,24 +162,31 @@ class WhatsApp:
                 page.keyboard.press("Escape")
             time.sleep(1)
 
-    def _open_chat(self, page, contact):
-        """Searches the contact by name and opens the top result like a person would (type, Enter). Returns the name shown in the chat header."""
+    def _open_chat(self, page, contact, names=()):
+        """Searches the contact by name and opens the top result like a person would (type, Enter). Names are often written differently from how they
+        sound (Emanuel / Emmanuel), so spelling variants are tried too. Returns the name shown in the chat header."""
         search = page.locator(self.SEARCH).first
-        search.click(timeout=15000)
-        page.keyboard.press("Control+A")
-        page.keyboard.insert_text(contact)
-        time.sleep(2.2)
-        page.keyboard.press("Enter")
         main = page.locator("#main")
-        for attempt in range(2):
-            try:
-                main.first.wait_for(timeout=6000)
+        for query in name_variants(contact, names):
+            search.click(timeout=15000)
+            page.keyboard.press("Control+A")
+            page.keyboard.insert_text(query)
+            time.sleep(2.2)
+            page.keyboard.press("Enter")
+            opened = False
+            for attempt in range(2):
+                try:
+                    main.first.wait_for(timeout=4000)
+                    opened = True
+                    break
+                except Exception:
+                    if not attempt:
+                        page.keyboard.press("ArrowDown")   # the first row can be a section title
+                        page.keyboard.press("Enter")
+            if opened:
                 break
-            except Exception:
-                if attempt:
-                    raise RuntimeError(f"Não encontrei nenhum contato ou conversa chamado “{contact}”.")
-                page.keyboard.press("ArrowDown")   # the first row can be a section title
-                page.keyboard.press("Enter")
+        else:
+            raise RuntimeError(f"Não encontrei nenhum contato ou conversa chamado “{contact}” (tentei também outras grafias do nome).")
         page.locator(self.COMPOSER).first.wait_for(timeout=15000)
         header = page.locator("#main header span[dir='auto']").first
         try:
@@ -154,7 +194,7 @@ class WhatsApp:
         except Exception:
             return contact
 
-    def send(self, contact, message="", image=None, confirm=lambda found: True, on_status=lambda s: None, dry_run=False):
+    def send(self, contact, message="", image=None, confirm=lambda found: True, on_status=lambda s: None, dry_run=False, names=()):
         """Finds `contact` by name, asks confirm(found_name), then sends the picture and/or the text. Returns the contact's name as WhatsApp shows it.
         dry_run does everything except the final send (and cleans up): used to check that the page still looks the way this code expects."""
         from playwright.sync_api import sync_playwright
@@ -175,7 +215,7 @@ class WhatsApp:
                 time.sleep(2)
                 self._dismiss_popups(page)
                 on_status(f"Procurando {contact}…")
-                found = self._open_chat(page, contact)
+                found = self._open_chat(page, contact, names)
                 self._dismiss_popups(page)
                 answer = confirm(found)   # True/False, or (True/False, edited text) when the user may rewrite the message
                 ok, edited = answer if isinstance(answer, tuple) else (answer, None)
@@ -186,9 +226,14 @@ class WhatsApp:
                 on_status(f"Enviando para {found}…")
                 if image:
                     # a picture goes through the chat's own file picker, then its Send button
-                    # the "photos and videos" input (accepts video too); the first image input of the page is the STICKER one and would send a sticker
-                    photos = page.locator('input[type="file"][accept*="video"]')
-                    (photos if photos.count() else page.locator('input[type="file"][accept*="image"]')).first.set_input_files(str(image))
+                    # the "photos and videos" input (image/*, video/...); the other image input of the page is the STICKER one (webp only) and sends a sticker
+                    accepts = page.eval_on_selector_all('input[type="file"]', "els => els.map(e => e.getAttribute('accept') || '')")
+                    idx = next((i for i, a in enumerate(accepts) if "video" in a), None)
+                    if idx is None:
+                        idx = next((i for i, a in enumerate(accepts) if "image/*" in a), None)
+                    if idx is None:
+                        idx = next((i for i, a in enumerate(accepts) if "image" in a and "webp" not in a), 0)
+                    page.locator('input[type="file"]').nth(idx).set_input_files(str(image))
                     send_btn = page.locator('[role="button"][aria-label^="Enviar"], [aria-label^="Send"]').first
                     send_btn.wait_for(timeout=20000)
                     time.sleep(1)

@@ -9,6 +9,12 @@ except Exception:
     except Exception:
         pass
 
+try:   # own identity for the taskbar: shows the Gota icon (not Python's) when it runs from source through pythonw
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Gota.Desktop")
+except Exception:
+    pass
+
+
 def selftest():
     """python main.py --selftest : checks the pieces that only break in the packaged program, writes selftest.txt."""
     import traceback

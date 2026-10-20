@@ -164,8 +164,8 @@ Conversar: {{"action":"reply","text":"..."}}
 Ações (UMA quando o pedido exigir):
 {{"action":"open_app","name":"programa"}}  {{"action":"whatsapp","number":"número dito","message":"texto"}} (só se disser um NÚMERO)  {{"action":"open_url","url":"..."}}  {{"action":"search_web","query":"..."}} (só para ABRIR pesquisa no navegador)
 {{"action":"set_alarm","hour":N,"minute":N,"label":"..."}}  {{"action":"set_timer","seconds":N,"label":"..."}}  {{"action":"share","text":"..."}} (copiar texto)  {{"action":"weather"}}  {{"action":"generate_image","prompt":"descrição EM INGLÊS"}}
-{{"action":"look_at_screen","screen":N}} fotografa a tela e responde olhando; "screen" só se indicou uma tela (número de "Telas:" ou "all" para todas), senão usa a tela do cursor
-{{"action":"whatsapp_send","contact":"nome","message":"texto ou vazio","screenshot":true,"screen":N,"region":"parte da tela"}} envia mensagem e/ou print a um CONTATO pelo WhatsApp conectado; "screenshot" se pediu print; "region" só se pediu apenas uma parte; "message" é o texto na voz do próprio dono (primeira pessoa), nunca como Gota ou IA; se ele corrige um rascunho que acabou de recusar ("não explique...", "mais curto"), refaça whatsapp_send com o texto corrigido
+{{"action":"look_at_screen","screen":N}} fotografa a tela e responde olhando; "screen" só se indicou uma tela (número de "Telas:" ou "all" para todas), senão usa a tela da janela ativa dele
+{{"action":"whatsapp_send","contact":"nome","message":"texto ou vazio","screenshot":true,"screen":N,"region":"parte da tela"}} envia mensagem e/ou print a um CONTATO pelo WhatsApp conectado; "contact" é o nome EXATAMENTE como o usuário falou (não corrija nem troque a grafia, ex.: "Emanuel SP" continua "Emanuel SP"); "screenshot" se pediu print; "region" só se pediu apenas uma parte; "message" é o texto na voz do próprio dono (primeira pessoa), nunca como Gota ou IA; se ele corrige um rascunho que acabou de recusar ("não explique...", "mais curto"), refaça whatsapp_send com o texto corrigido
 {{"action":"outlook","kind":"agenda","days":N}} agenda/compromissos (N dias a partir de hoje)   {{"action":"outlook","kind":"emails","unread":false,"days":N}} ler/analisar e-mails (importantes, pendentes de resposta, não lidos)
 {{"action":"use_computer","background":false}} (com "background":true se a pessoa pedir para fazer em segundo plano ou avisar depois) VOCÊ executar algo neste computador agora: arquivos, pastas, comandos, processos, rede, disco, git, relatórios, tarefas agendadas. Pergunta de COMO fazer algo ("como eu...", "qual o comando...", "como se faz") NÃO é use_computer: é ask_expert, e a resposta mostra o comando em bloco de código
 {{"action":"ask_expert","query":"pergunta técnica completa e autônoma"}} TI, segurança, Windows, Linux, redes, backup, Veeam: responde por conhecimento
@@ -262,9 +262,10 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         a = d.get("action")
         if a == "look_at_screen":
             self.on_phase("thinking")
-            return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=d.get("screen")), None
+            return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=tools.parse_screen(goal) or d.get("screen")), None
         if a == "whatsapp_send":
             self.on_phase("working")
+            d["screen"] = tools.parse_screen(goal) or d.get("screen")
             return self.whatsapp_send(goal, d), None
         if a == "outlook":
             self.on_phase("working")
@@ -476,7 +477,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
             pass
 
     def capture(self, screen=None):
-        """Photographs a screen (hiding Gota's own windows). screen: a number from "Telas:", "all", or None for the one with the cursor.
+        """Photographs a screen (hiding Gota's own windows). screen: a number from "Telas:", "all", or None for the one with the active window.
         Returns (PIL image at full size, description, is_several_screens). Raises ValueError with a sentence for the user if the screen does not exist."""
         from PIL import ImageGrab
         sir = self.p.sir()
@@ -488,7 +489,11 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                 rect = (min(m["rect"][0] for m in mons), min(m["rect"][1] for m in mons), max(m["rect"][2] for m in mons), max(m["rect"][3] for m in mons))
                 which, big = f"todas as {len(mons)} telas lado a lado", True
             else:
-                pick = next((m for m in mons if str(m["n"]) == want), None) if want.isdigit() else tools.cursor_monitor(mons)
+                active = tools.active_monitor(mons)
+                if want == "other":
+                    pick = next((m for m in mons if m is not active), active)
+                else:
+                    pick = next((m for m in mons if str(m["n"]) == want), None) if want.isdigit() else active
                 if pick is None:
                     raise ValueError(f"Não encontrei a tela {want}, {sir}; vejo {len(mons)} telas conectadas (de 1 a {max(m['n'] for m in mons)}).")
                 rect, which = pick["rect"], f"a tela {pick['n']} ({pick['where']})"
@@ -610,8 +615,8 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                 shown = f"print de {which}" + (f" (não consegui isolar “{part}”, vai a tela inteira)" if part else "")
             import tempfile
             shot.thumbnail((2400, 2400))
-            image = Path(tempfile.gettempdir()) / "gota_whatsapp_print.png"
-            shot.convert("RGB").save(image)
+            image = Path(tempfile.gettempdir()) / "gota_print.jpg"
+            shot.convert("RGB").save(image, quality=92)
         if image is not None and message and self._echoes(message, goal):
             message = ""   # the model copied the user's request into the message: send just the picture and let him add text in the window
         if not message and image is None:
@@ -634,7 +639,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                 return (ok, edited)
             return self.confirm(f"Enviar no WhatsApp para “{found}” (você pediu “{contact}”):\n{what}", False)
         try:
-            found = self.whatsapp.send(contact, message, image, confirm=confirm, on_status=self.on_status)
+            found = self.whatsapp.send(contact, message, image, confirm=confirm, on_status=self.on_status, names=[self.p.name] if self.p.name else [])
         except wa_mod.NotConnected:
             return f"A sessão do WhatsApp expirou, {sir}. Conecte-o de novo em Conexões."
         except wa_mod.Cancelled:
@@ -690,7 +695,9 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                       "pequenos erros de leitura): use o texto para ler com exatidão mensagens, códigos de erro, nomes de jobs, servidores e datas. Responda ao que foi perguntado. "
                       "Quando a tela mostrar erro, falha, aviso ou algo anormal, SEMPRE explique como especialista: 1) o que está acontecendo, citando o texto exato da tela; "
                       "2) a causa provável; 3) como corrigir, em passos e com comandos quando houver; 4) o que verificar se não resolver. Use o MATERIAL DA BASE quando ajudar. "
-                      "Nunca invente o que não está na tela; se algo não estiver legível, diga. Português do Brasil, chamando-o de \"{sir}\". Comandos em blocos ```.")
+                      "Nunca invente o que não está na tela; se algo não estiver legível, diga. Português do Brasil, chamando-o de \"{sir}\". "
+                      "SEJA BREVE: responda em até 4 frases curtas (o que está acontecendo, citando o texto do erro, a causa provável e a ação principal para corrigir) e termine perguntando "
+                      "se ele quer os passos detalhados. Só detalhe passos, comandos e verificações se ele pedir. Comandos (quando pedidos) em blocos ```.")
 
     def look_at_screen(self, question, spoken=False, history=(), screen=None, image_path=None):
         """Photographs the screen the user means (or uses `image_path`), reads its text with OCR, adds what Gota knows (knowledge base, skills,
@@ -747,7 +754,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         material = skills_mod.prompt_block(skill_hits, 2000) if skill_hits else ""
         if kb_hits and (len(material) < 1800):
             material += ("\n\n" if material else "") + "\n\n".join(f"[{t}] (fonte: {src})\n{txt[:900]}" for _, t, src, txt in kb_hits[:2])
-        system = self.SCREEN_SYSTEM.format(who=self.p.address(), which=which, sir=sir) + (" Fale sem listas nem símbolos." if spoken else "")
+        system = self.SCREEN_SYSTEM.format(who=self.p.address(), which=which, sir=sir) + (" Será FALADO em voz alta: no máximo 3 frases curtas (até uns 350 caracteres), sem listas nem símbolos." if spoken else "")
         self.on_status("Analisando o que vejo...")
         try:
             recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {t[:300]}" for r, t in list(history)[-4:] if t.strip())

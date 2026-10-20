@@ -1,5 +1,6 @@
 """A frameless window with its own title bar: rounded corners (Windows 11), taskbar button, drag, resize, min/max/close."""
 import ctypes, tkinter as tk
+from pathlib import Path
 from ctypes import wintypes
 
 user32, dwm = ctypes.windll.user32, ctypes.windll.dwmapi
@@ -35,6 +36,13 @@ def show_in_taskbar(win):
         hw = hwnd_of(win)
         style = user32.GetWindowLongW(hw, -20)
         user32.SetWindowLongW(hw, -20, (style & ~0x80) | 0x40000)
+        ico = Path(__file__).parent / "assets" / "gota.ico"
+        if ico.exists():   # the Gota cat on the taskbar button even when started by pythonw (otherwise Python's icon shows)
+            user32.LoadImageW.restype = ctypes.c_void_p
+            for kind, size in ((1, 32), (0, 16)):   # ICON_BIG, ICON_SMALL
+                h = user32.LoadImageW(None, str(ico), 1, size, size, 0x10)   # IMAGE_ICON, LR_LOADFROMFILE
+                if h:
+                    user32.SendMessageW(ctypes.c_void_p(hw), 0x80, kind, ctypes.c_void_p(h))   # WM_SETICON
         win.withdraw()
         win.after(15, win.deiconify)
     except Exception:

@@ -322,5 +322,24 @@ class KbLearn(unittest.TestCase):
         self.assertIn("## Uso", text)
 
 
+class TestScreensAndNames(unittest.TestCase):
+    def test_parse_screen(self):
+        from gota import tools
+        self.assertEqual(tools.parse_screen("O que está acontecendo na minha primeira hotel?"), 1)   # speech slip for "tela"
+        self.assertEqual(tools.parse_screen("analisa a segunda tela"), 2)
+        self.assertEqual(tools.parse_screen("olha o monitor dois"), 2)
+        self.assertEqual(tools.parse_screen("as duas telas"), "all")
+        self.assertEqual(tools.parse_screen("e na outra tela?"), "other")
+        self.assertIsNone(tools.parse_screen("o que tem na minha tela"))
+        self.assertIsNone(tools.parse_screen("qual a segunda coisa do menu"))
+
+    def test_name_variants(self):
+        from gota import whatsapp
+        v = whatsapp.name_variants("Emmanuel SP", ["emanuel"])
+        self.assertEqual(v[0], "Emmanuel SP")
+        self.assertIn("Emanuel SP", v[:3])
+        self.assertLessEqual(len(v), 8)
+
 if __name__ == "__main__":
     unittest.main()
+

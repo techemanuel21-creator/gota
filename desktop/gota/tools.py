@@ -385,14 +385,64 @@ def cursor_monitor(mons):
     return mons[0] if mons else None
 
 
+def active_monitor(mons):
+    """The monitor of the window the user is working in (the foreground window); the one with the mouse cursor when there is none."""
+    import ctypes
+    from ctypes import wintypes
+    try:
+        u = ctypes.windll.user32
+        u.GetForegroundWindow.restype = ctypes.c_void_p
+        u.MonitorFromWindow.restype = ctypes.c_void_p
+        u.MonitorFromWindow.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        hwnd = u.GetForegroundWindow()
+        if hwnd:
+            rect = wintypes.RECT()
+            u.GetWindowRect(ctypes.c_void_p(hwnd), ctypes.byref(rect))
+            cx, cy = (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+            for m in mons:
+                l, t, r, b = m["rect"]
+                if l <= cx < r and t <= cy < b:
+                    return m
+    except Exception:
+        pass
+    return cursor_monitor(mons)
+
+
+_ORDINALS = {"primeir": 1, "segund": 2, "terceir": 3, "quart": 4, "quint": 5}
+_NUMBERS = {"1": 1, "um": 1, "uma": 1, "2": 2, "dois": 2, "duas": 2, "3": 3, "tres": 3, "4": 4, "quatro": 4, "5": 5, "cinco": 5}
+_SCREEN_WORDS = ("tela", "monitor", "video", "display", "ecra")
+
+
+def _screen_word(w):
+    import difflib
+    return any(difflib.SequenceMatcher(None, w, s).ratio() >= 0.6 for s in _SCREEN_WORDS)
+
+
+def parse_screen(text):
+    """Which screen the user named in plain words: 2, "all" or "other"; None when he did not say. Tolerant to speech-recognition slips
+    ("primeira hotel" for "primeira tela"). The numbers are the ones Windows shows in Settings > Display."""
+    t = norm(text)
+    if re.search(r"\b(todas|todos|ambas|ambos)\b[^.]{0,12}\b(telas?|monitores|videos?)\b|\b(duas|dois|as 2|os 2)\b[^.]{0,6}\b(telas|monitores|videos)\b", t):
+        return "all"
+    for m in re.finditer(r"\b(primeir|segund|terceir|quart|quint)[oa]s?\s+(\w+)", t):
+        if _screen_word(m.group(2)):
+            return _ORDINALS[m.group(1)]
+    m = re.search(r"\b(?:tela|monitor|video|display)s?\s*(?:numero\s*|n\s*|no\s*)?(\d|um|uma|dois|duas|tres|quatro|cinco)\b", t)
+    if m:
+        return _NUMBERS[m.group(1)]
+    if re.search(r"\b(outra|outro)\s+(tela|monitor|video)\b", t):
+        return "other"
+    return None
+
+
 def screens_note():
-    """One line telling the model which screens exist and where the mouse is; empty with a single screen."""
+    """One line telling the model which screens exist and where the user is working; empty with a single screen."""
     mons = monitors()
     if len(mons) < 2:
         return ""
-    cur = cursor_monitor(mons)
+    cur = active_monitor(mons)
     parts = ", ".join(f"tela {m['n']} ({m['where']}, {m['rect'][2] - m['rect'][0]}x{m['rect'][3] - m['rect'][1]})" for m in mons)
-    return f"Telas: {parts}; o cursor está na tela {cur['n']}"
+    return f"Telas (numeração do Windows): {parts}; a janela ativa dele está na tela {cur['n']}"
 
 
 # ---------------------------------------------------------------------- screen capture and reading
