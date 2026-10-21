@@ -381,6 +381,17 @@ class TestVoiceLanguages(unittest.TestCase):
         from gota import voice
         self.assertEqual([l for l, _ in voice.split_languages("O backup do servidor Veeam falhou na tela dois.")], ["pt"])
 
+class TestSpokenForm(unittest.TestCase):
+    def test_job_names_are_spelled_out(self):
+        from gota import voice
+        self.assertEqual(voice.spoken_form("JOB_BACKUP_TAPE_NOD01_B"), "job, backup, tape, nod zero um, bê")
+        self.assertEqual(voice.spoken_form("o servidor falhou"), "o servidor falhou")
+
+    def test_ui_labels_are_english(self):
+        from gota import voice
+        langs = dict((s.strip(), l) for l, s in voice.split_languages("O resultado é Last Result Failed."))
+        self.assertEqual(langs.get("Last Result Failed."), "en")
+
 if __name__ == "__main__":
     unittest.main()
 

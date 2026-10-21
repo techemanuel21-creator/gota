@@ -35,44 +35,81 @@ def ensure_piper_voice():
         return None
 
 
-_EN_WORDS = set("the and is are was were to of in that it for with on this you be at by from has have had been not but or an will would could should can may if then than "
-                "when while which who what where how all any some your our their its his her they we please there here these those into about after before over under "
-                "between because during without within also only just very more most such other another each every both few many much own same".split())
+_EN_FUNCTION = set("the and is are was were to of in that it for with on this you be at by from has have had been not but or an will would could should can may if then than "
+                   "when while which who what where how all any some your our their its his her they we please there here these those into about after before over under "
+                   "between because during without within also only just very more most such other another each every both few many much own same".split())
+_EN_IT = set("job backup server error errors failed failure fail success warning status result results last first next run running stopped started start stop complete completed "
+             "processing process processed terminated termination aborted abort due connection connect connected disconnected timeout timed out access denied permission file files "
+             "folder folders path network disk storage repository restore recovery snapshot virtual machine host cluster service services event log logs user password account "
+             "login logout invalid unable cannot found missing data source target proxy bottleneck load primary finished read transferred duration rate speed size type name "
+             "objects object scheduled schedule description action waiting resources infrastructure availability backed up created deleted updated retry details summary".split())
+_EN_WORDS = _EN_FUNCTION | _EN_IT
 _PT_WORDS = set("o a os as um uma uns umas de da do das dos em no na nos nas para por com sem que e é são não se mas ou ao à aos quando como mais muito já foi era ser "
                 "está estão tem têm vai vou meu minha seu sua isso isto esse essa este esta aqui lá mesmo também então senhor senhora erro falha causa servidor tela "
                 "ele ela eles elas eu você vocês nós me te lhe nem pois porque sobre entre até depois antes ainda sempre nunca só sim ter fazer pode podem deve".split())
 
 
 def split_languages(text):
-    """[(lang, text)] with lang 'en' for runs of English (four or more words, at least two English function words and no Portuguese ones, e.g. an error
-    message quoted from the screen) and 'pt' for everything else, so each part is read with the voice that pronounces it right."""
+    """[(lang, text)] with lang 'en' for runs of three or more consecutive English words (function words and common IT/UI words, e.g. an error message
+    or a label quoted from the screen, with no Portuguese word in between) and 'pt' for everything else."""
     import re
     tokens = re.findall(r"\s+|[^\s]+", text)
-    chunks, cur = [], []          # chunks of consecutive tokens that are not Portuguese markers
+    kinds = []
     for tok in tokens:
         word = re.sub(r"[^\wÀ-ÿ']", "", tok).lower()
-        pt = bool(re.search(r"[À-ÿ]", tok)) or word in _PT_WORDS
         if tok.isspace():
-            cur.append((tok, None))
-        elif pt:
-            chunks.append(("pt", cur)); cur = []
-            chunks.append(("pt", [(tok, word)]))
+            kinds.append("space")
+        elif re.search(r"[À-ÿ_\d]", tok) or word in _PT_WORDS:
+            kinds.append("pt")
+        elif word.isascii() and word in _EN_WORDS:
+            kinds.append("en")
         else:
-            cur.append((tok, word))
-    chunks.append(("pt", cur))
-    out = []
-    for kind, toks in chunks:
-        if not toks:
-            continue
-        words = [w for _t, w in toks if w]
-        hits = sum(1 for w in words if w in _EN_WORDS)
-        lang = "en" if kind == "pt" and len(words) >= 4 and hits >= 2 and hits * 4 >= len(words) and all(w.isascii() for w in words) else "pt"
-        piece = "".join(t for t, _w in toks)
-        if out and out[-1][0] == lang:
-            out[-1] = (lang, out[-1][1] + piece)
+            kinds.append("pt")
+    out, i = [], 0
+    while i < len(tokens):
+        if kinds[i] == "en":
+            j, last = i, i
+            while j < len(tokens) and kinds[j] in ("en", "space"):
+                if kinds[j] == "en":
+                    last = j
+                j += 1
+            words = sum(1 for k in range(i, last + 1) if kinds[k] == "en")
+            if words >= 3:
+                out.append(("en", "".join(tokens[i:last + 1])))
+                i = last + 1
+                continue
+        out.append(("pt", tokens[i]))
+        i += 1
+    merged = []
+    for lang, s in out:
+        if merged and merged[-1][0] == lang:
+            merged[-1] = (lang, merged[-1][1] + s)
         else:
-            out.append((lang, piece))
-    return [(l, s) for l, s in out if s.strip()]
+            merged.append((lang, s))
+    return [(l, s) for l, s in merged if s.strip()]
+
+
+def spoken_form(text):
+    """Makes names that are not words readable: JOB_BACKUP_TAPE_NOD01_B -> "job backup tape nod zero um bê" (parts split at _ and at letters/digits, digits one by one when
+    they start with 0 or are short, single letters by their Portuguese name)."""
+    import re
+    letters = {c: n for c, n in zip("abcdefghijklmnopqrstuvwxyz", "á bê cê dê é éfe gê agá i jota cá éle ême ene ó pê quê érre ésse tê u vê dáblio xis ípsilon zê".split())}
+    digits = "zero um dois três quatro cinco seis sete oito nove".split()
+
+    def part(p):
+        out = []
+        for chunk in re.findall(r"[A-Za-z]+|\d+", p):
+            if chunk.isdigit():
+                out.append(" ".join(digits[int(d)] for d in chunk) if (chunk.startswith("0") or len(chunk) <= 2) else chunk)
+            elif len(chunk) == 1:
+                out.append(letters[chunk.lower()])
+            else:
+                out.append(chunk.lower())
+        return " ".join(out)
+
+    def ident(m):
+        return ", ".join(part(p) for p in m.group(0).split("_") if p)
+    return re.sub(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b", ident, text)
 
 
 class Speaker:
@@ -106,11 +143,29 @@ class Speaker:
         engine.setProperty("rate", 150)
         return engine
 
+    # the voice swallows the Portuguese "lh" (detalhadas -> detaadas, filho -> fio); "l" + "i" is pronounced reliably
+    PT_FIX = {"ʎ": ["l", "i"]}
+
+    def _synth(self, piper, text, lang, np):
+        """Speech for one piece: espeak phonemes (English or Portuguese), the Portuguese sound fixes, then the voice."""
+        chunks = []
+        for phonemes in piper.phonemize(text):
+            if not phonemes:
+                continue
+            if lang != "en":
+                phonemes = [q for p in phonemes for q in self.PT_FIX.get(p, [p])]
+            audio = np.asarray(piper.phoneme_ids_to_audio(piper.phonemes_to_ids(phonemes), self.cfg), dtype=np.float32)
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            audio = audio / peak if peak > 1e-8 else np.zeros_like(audio)
+            chunks.append((np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16))
+        return np.concatenate(chunks) if chunks else np.zeros(1, dtype=np.int16)
+
     english = True   # read English phrases with English sounds (the same voice); can be switched off in the Voz e microfone window
 
     def _render(self, piper, text, np):
         """The audio for `text` in the SAME voice: English phrases are phonemized as English (espeak en-us) and spoken by the Portuguese voice, whose
         phoneme set covers them. A short pause separates them from the Portuguese around them."""
+        text = spoken_form(text)
         pieces = split_languages(text) if self.english else [("pt", text)]
         pause = np.zeros(int(piper.config.sample_rate * 0.18), dtype=np.int16)
         parts = []
@@ -119,12 +174,12 @@ class Speaker:
             if lang == "en":
                 piper.config.espeak_voice = "en-us"
             try:
-                raw = b"".join(c.audio_int16_bytes for c in piper.synthesize(piece, syn_config=self.cfg))
+                x = self._synth(piper, piece, lang, np)
             finally:
                 piper.config.espeak_voice = old
             if lang == "en" and parts:
                 parts.append(pause)
-            parts.append(np.frombuffer(raw, dtype=np.int16))
+            parts.append(x)
             if lang == "en" and k < len(pieces) - 1:
                 parts.append(pause)
         return np.concatenate(parts) if parts else np.zeros(1, dtype=np.int16)
