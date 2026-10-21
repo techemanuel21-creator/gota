@@ -94,6 +94,19 @@ def search_query(text):
     return q.strip(" ?!.,")
 
 
+def speakable_text(text):
+    """A reply for the voice: no quotation marks, markdown, brackets or slashes between words (they were read as odd characters), single spaces."""
+    s = re.sub(r"```.*?```", " ", text, flags=re.S)
+    s = re.sub(r"[“”„\"«»]", "", s)
+    s = re.sub(r"[‘’`´]", "", s)
+    s = re.sub(r"[*#~]{1,3}(?=\w)|(?<=\w)[*#~]{1,3}", "", s)   # markdown emphasis (underscores inside names such as JOB_TAPE are kept)
+    s = re.sub(r"(?<=[A-Za-zÀ-ÿ])\s*/\s*(?=[A-Za-zÀ-ÿ])|\s*[|\\]\s*", ", ", s)   # Stopped / Failed -> Stopped, Failed (dates and paths with digits keep their slashes)
+    s = re.sub(r"[\[\]{}<>]", "", s)
+    s = re.sub(r"\s+([,.;:!?])", r"\1", s)
+    s = re.sub(r",\s*,", ",", s)
+    return re.sub(r"[ \t]+", " ", s).strip()
+
+
 def reply_text_so_far(acc):
     """The text of an answer that is still being written: the "text" of a reply JSON (even half-written), or plain text.
     None while the model is writing an action (nothing to show), "" while it is still before the text."""
@@ -260,7 +273,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         now = datetime.now()
         where = f" · Local: {loc['city']}" if loc and loc.get("city") else ""
         screens = tools.screens_note(self.screen_nicks())   # which screens exist and where the cursor is (empty with a single screen)
-        extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, símbolos nem links; a pergunta veio de reconhecimento de voz e pode ter erros em nomes técnicos (Veeam, Hyper-V...): entenda pelo contexto" if spoken else "")
+        extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, aspas, símbolos nem links, e SEM frases em inglês: traduza ou explique em português as mensagens em inglês (cite em inglês só nomes de jobs, servidores e produtos); a pergunta veio de reconhecimento de voz e pode ter erros em nomes técnicos (Veeam, Hyper-V...): entenda pelo contexto" if spoken else "")
         user_text = f"[Agora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M}{where}{extra}]\n" + (goal or "O que você vê nesta imagem?")
         mem = self.memory.block(goal)
         if mem:
@@ -900,7 +913,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         material = skills_mod.prompt_block(skill_hits, 2000) if skill_hits else ""
         if kb_hits and (len(material) < 1800):
             material += ("\n\n" if material else "") + "\n\n".join(f"[{t}] (fonte: {src})\n{txt[:900]}" for _, t, src, txt in kb_hits[:2])
-        system = self.SCREEN_SYSTEM.format(who=self.p.address(), which=which, sir=sir) + (" Será FALADO em voz alta: no máximo 3 frases curtas (até uns 350 caracteres), sem listas nem símbolos." if spoken else "")
+        system = self.SCREEN_SYSTEM.format(who=self.p.address(), which=which, sir=sir) + (" Será FALADO em voz alta: no máximo 3 frases curtas (até uns 350 caracteres), em português, sem aspas, listas nem símbolos e sem citar mensagens em inglês (explique o que elas significam)." if spoken else "")
         self.on_status("Analisando o que vejo...")
         try:
             recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {t[:300]}" for r, t in list(history)[-4:] if t.strip())
@@ -913,7 +926,8 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         except Exception as e:
             return f"Não consegui analisar a tela, {sir}: {e}"
         data = self.extract_json(out)
-        return ((data or {}).get("text") or out).strip()
+        text = ((data or {}).get("text") or out).strip()
+        return speakable_text(text) if spoken else text
 
     def weather(self, goal):
         sir = self.p.sir()

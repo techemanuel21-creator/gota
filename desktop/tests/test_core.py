@@ -927,6 +927,12 @@ class ProblemLines(unittest.TestCase):
         Image.new("RGB", (1200, 700), "white").save(p)
         self.assertIsInstance(tools.ocr_tiles(p), str)          # runs the parallel reading without error on a blank screen
 
+class SpeakableText(unittest.TestCase):
+    def test_quotes_markdown_and_odd_symbols_are_removed(self):
+        out = brain.speakable_text("O JOB_TAPE_SEMANAL_SEG aparece como \u201cStopped / Failed\u201d, veja **Details** e [Tape] | fim em 21/10/2026.")
+        self.assertEqual(out, "O JOB_TAPE_SEMANAL_SEG aparece como Stopped, Failed, veja Details e Tape, fim em 21/10/2026.")
+        self.assertNotRegex(out, r"[\u201c\u201d*\[\]|]")
+
 if __name__ == "__main__":
     unittest.main()
 
