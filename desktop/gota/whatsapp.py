@@ -218,6 +218,63 @@ class WhatsApp:
             raise RuntimeError("Não achei o campo de fotos do WhatsApp (a página mudou?).")
         page.locator('input[type="file"]').nth(idx).set_input_files(str(image))
 
+    _UNREAD_JS = """
+    () => {
+      const seen = new Map();
+      const rows = document.querySelectorAll('#pane-side [role="listitem"], #pane-side [role="row"], #pane-side [data-testid="cell-frame-container"]');
+      rows.forEach(row => {
+        const badge = row.querySelector('[aria-label*="não lida"], [aria-label*="nao lida"], [aria-label*="unread"], [data-testid="icon-unread-count"]');
+        if (!badge) return;
+        const title = (row.querySelector('span[title]') || {}).title || '';
+        const m = ((badge.getAttribute('aria-label') || badge.innerText || '') + '').match(/\\d+/);
+        if (title && !seen.has(title)) seen.set(title, m ? parseInt(m[0]) : 1);
+      });
+      return [...seen.entries()].map(([title, count]) => ({title, count}));
+    }
+    """
+
+    def unread(self, on_status=lambda s: None):
+        """The chats with unread messages, read from the connected WhatsApp Web: [{title, count}] (newest first as the list shows them).
+        Uses the "Não lidas" filter when the page has it, so chats below the visible part of the list are counted too."""
+        from playwright.sync_api import sync_playwright
+        if not self.connected():
+            raise NotConnected()
+        with sync_playwright() as pw:
+            ctx = self._open(pw, headless=True)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                on_status("Abrindo o WhatsApp…")
+                page.goto(URL)
+                state = self._state(page, 75)
+                if state == "qr":
+                    self.settings.set("whatsapp_connected", False)
+                    raise NotConnected()
+                if state != "ready":
+                    raise RuntimeError("O WhatsApp Web não carregou a tempo.")
+                time.sleep(2)
+                self._dismiss_popups(page)
+                on_status("Lendo as conversas não lidas…")
+                try:   # the filter chip shows only the unread chats
+                    page.locator('button:has-text("Não lidas"), [role="button"]:has-text("Não lidas"), button:has-text("Unread"), [role="button"]:has-text("Unread")').first.click(timeout=3000)
+                    time.sleep(1.2)
+                except Exception:
+                    pass
+                found = {}
+                for _ in range(6):   # scroll the list so rows below the visible part are read too
+                    for r in page.evaluate(self._UNREAD_JS):
+                        found.setdefault(r["title"], r["count"])
+                    try:
+                        before = len(found)
+                        page.evaluate("() => { const p = document.querySelector('#pane-side'); if (p) p.scrollBy(0, p.clientHeight * 0.9); }")
+                        time.sleep(0.5)
+                        if before == len(found) and _ >= 1:
+                            break
+                    except Exception:
+                        break
+                return [{"title": k, "count": v} for k, v in found.items()]
+            finally:
+                ctx.close()
+
     def send(self, contact, message="", image=None, confirm=lambda found: True, on_status=lambda s: None, dry_run=False, names=()):
         """Finds `contact` by name, asks confirm(found_name), then sends the picture and/or the text. Returns the contact's name as WhatsApp shows it.
         dry_run does everything except the final send (and cleans up): used to check that the page still looks the way this code expects."""

@@ -769,6 +769,96 @@ class ValidateLater(unittest.TestCase):
         self.assertIn("porta 38", sent[0])
         self.assertIn("```cisco", sent[0])
 
+class WhatsappUnread(unittest.TestCase):
+    def make(self, connected, chats=None, error=None):
+        from gota import brain
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        b.whatsapp.connected = lambda: connected
+        def unread(on_status=None):
+            if error:
+                raise error
+            return chats
+        b.whatsapp.unread = unread
+        return b
+
+    def test_unread_question_goes_straight_to_whatsapp_without_the_model(self):
+        b = self.make(True, [{"title": "Maria", "count": 3}, {"title": "João", "count": 1}])
+        reply, _ = b.run("quantas conversas não lidas eu tenho no whatsapp?", [], "t")
+        self.assertIn("2 conversas não lidas", reply)
+        self.assertIn("Maria (3)", reply)
+        self.assertIn("4 mensagens", reply)
+
+    def test_not_connected_and_empty(self):
+        self.assertIn("não está conectado", self.make(False).run("tem mensagem nova no zap?", [], "t")[0])
+        self.assertIn("Nenhuma conversa não lida", self.make(True, []).run("tenho mensagens não lidas no whatsapp?", [], "t")[0])
+
+    def test_sending_is_not_mistaken_for_reading(self):
+        from gota.brain import WA_UNREAD, norm
+        self.assertIsNone(WA_UNREAD.search(norm("abre o whatsapp")))
+
+    def test_unread_badges_are_found_in_the_chat_list(self):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            self.skipTest("playwright não instalado")
+        from gota import whatsapp
+        html = """<div id="pane-side"><div role="listitem"><span title="Maria">Maria</span><span aria-label="3 mensagens não lidas">3</span></div>
+<div role="listitem"><span title="João">João</span></div><div role="listitem"><span title="Pedro">Pedro</span><span aria-label="1 mensagem não lida">1</span></div></div>"""
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(channel="msedge", headless=True)
+            page = browser.new_page()
+            page.set_content(html)
+            found = page.evaluate(whatsapp.WhatsApp._UNREAD_JS)
+            browser.close()
+        self.assertEqual({(f["title"], f["count"]) for f in found}, {("Maria", 3), ("Pedro", 1)})
+
+class MassiveContext(unittest.TestCase):
+    def setUp(self):
+        from gota import brain
+        self.b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        self.a = self.b.agent
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_big_document_is_read_in_one_call_with_the_cloud(self):
+        f = self.dir / "contrato.txt"
+        f.write_text("\n".join(f"Página {i // 40 + 1} linha {i}: cláusula {i % 90}" for i in range(6000)), "utf-8")
+
+        class Cloud:
+            calls = 0
+            def cloud_ready(self): return True
+            def one_shot(self, system, user, image=None, on_delta=None):
+                Cloud.calls += 1
+                return "achei na cláusula 44 [p.140]"
+        self.b.llm = lambda: Cloud()
+        out = self.a.t_read_document(str(f), "qual a cláusula?")
+        self.assertEqual(Cloud.calls, 1)                      # not 20 partial reads and a merge
+        self.assertIn("de uma vez", out)
+
+    def test_project_is_gathered_key_files_first_and_junk_skipped(self):
+        (self.dir / "README.md").write_text("# projeto")
+        (self.dir / "src").mkdir()
+        (self.dir / "src" / "a.py").write_text("print(1)")
+        (self.dir / "node_modules").mkdir()
+        (self.dir / "node_modules" / "x.js").write_text("lixo")
+        (self.dir / "foto.png").write_bytes(b"\x89PNG")
+        files = self.a.gather_project(self.dir)
+        names = [n for n, _ in files]
+        self.assertEqual(names[0], "README.md")
+        self.assertIn("src\\a.py", names)
+        self.assertFalse(any("node_modules" in n or n.endswith(".png") for n in names))
+
+    def test_conversation_history_is_not_cut_for_the_cloud(self):
+        from gota import cloud
+        sent = {}
+
+        class C(cloud.OpenRouter):
+            def _post(self, messages, on_delta=None, retries=1):
+                sent["n"] = len(messages)
+                return "ok"
+        history = [("user" if i % 2 == 0 else "model", f"mensagem {i}") for i in range(300)]
+        C("k").chat("k", "sistema", history, "pergunta final")
+        self.assertEqual(sent["n"], 302)                       # system + all 300 + the question
+
 if __name__ == "__main__":
     unittest.main()
 

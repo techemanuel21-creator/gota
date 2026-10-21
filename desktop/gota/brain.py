@@ -28,6 +28,7 @@ AGENT_WORDS = re.compile(
     r"docker|zip|compacta|descompacta|converte|converter|log|logs|renomeia|renomear|organiza|organizar|limpa|limpar|temporarios|cache|"
     r"agende|monitora|monitorar|avise quando|variaveis de ambiente|sql|banco de dados|sqlite|traduz|traduza|"
     r"transcreve|transcrever|varredura|segredos|requisicao|testes|pytest|modo agente)\b")
+WA_UNREAD = re.compile(r"(whats\s?app|zap)\b.*\b(nao lidas?|nao lidos?|novas?|pendentes?|sem ler|por ler|para ler)\b|\b(nao lidas?|nao lidos?|mensage(?:m|ns) novas?|conversas? novas?|novas? mensage(?:m|ns)|novas? conversas?|pendentes?)\b.*\b(whats\s?app|zap)\b|\bquantas?\b.*\b(conversas?|mensage(?:m|ns))\b.*\b(whats\s?app|zap)\b")
 SCRIPT_REQUEST = re.compile(r"\b(crie|criar|gere|gerar|escreva|escrever|monte|montar|configure|configurar|faca|fazer|preciso de|me de|me passe)\b.*\b(script|comando|comandos|configuracao|config|playbook|dockerfile|regra|query|consulta|sql|one-?liner|codigo)\b", re.S)
 TECH_WORDS = re.compile(
     r"\b(windows|linux|ubuntu|debian|centos|rhel|powershell|cmd|registro|firewall|vpn|dns|dhcp|active directory|gpo|ldap|kerberos|"
@@ -171,12 +172,13 @@ Ações (UMA quando o pedido exigir):
 {{"action":"set_alarm","hour":N,"minute":N,"label":"..."}}  {{"action":"set_timer","seconds":N,"label":"..."}}  {{"action":"share","text":"..."}} (copiar texto)  {{"action":"weather"}}  {{"action":"generate_image","prompt":"descrição EM INGLÊS"}}
 {{"action":"look_at_screen","screen":N}} fotografa a tela e responde olhando; "screen" só se indicou uma tela (número de "Telas:" ou "all" para todas), senão usa a tela da janela ativa dele
 {{"action":"whatsapp_send","contact":"nome","message":"texto ou vazio","screenshot":true,"screen":N,"region":"parte da tela"}} envia mensagem e/ou print a um CONTATO pelo WhatsApp conectado; "contact" é o nome EXATAMENTE como o usuário falou (não corrija nem troque a grafia, ex.: "Emanuel SP" continua "Emanuel SP"); "screenshot" se pediu print; "region" só se pediu apenas uma parte; "message" é o texto na voz do próprio dono (primeira pessoa), nunca como Gota ou IA; se ele corrige um rascunho que acabou de recusar ("não explique...", "mais curto"), refaça whatsapp_send com o texto corrigido
+{{"action":"whatsapp_unread"}} quantas conversas/mensagens NÃO LIDAS há no WhatsApp conectado (e de quem)
 {{"action":"outlook","kind":"agenda","days":N}} agenda/compromissos (N dias a partir de hoje)   {{"action":"outlook","kind":"emails","unread":false,"days":N}} ler/analisar e-mails (importantes, pendentes de resposta, não lidos)
 {{"action":"use_computer","background":false}} (com "background":true se a pessoa pedir para fazer em segundo plano ou avisar depois) VOCÊ executar algo neste computador agora: arquivos, pastas, comandos, processos, rede, disco, git, relatórios, tarefas agendadas. Pergunta de COMO fazer algo ("como eu...", "qual o comando...", "como se faz") NÃO é use_computer: é ask_expert, e a resposta mostra o comando em bloco de código
 {{"action":"ask_expert","query":"pergunta técnica completa e autônoma"}} TI, segurança, Windows, Linux, redes, backup, Veeam: responde por conhecimento
 {{"action":"needs_search","query":"termos curtos"}} para notícias, leis, esportes, preços, pessoas públicas, lançamentos, o que muda com o tempo ou se tiver dúvida (cidade na query se depender do local)
 Escolha pela intenção da frase inteira (vem de voz, é informal) e pela conversa até aqui; se a pessoa corrige ou complementa, siga o assunto. "query" deve ser completa e autônoma, resolvendo o que já foi dito.
-Se a resposta depende do que ela vê ou faz agora no computador (janela, console, job, erro, "aqui", "isso", "esse"), use look_at_screen: não pesquise nem responda de cabeça. Se pede para MANDAR algo a alguém, é whatsapp_send, mesmo citando tela ou print.
+Use look_at_screen SÓ quando a pessoa se refere ao que está NA TELA ("na tela", "nessa janela", "esse erro aqui", "o que está acontecendo aqui"). Perguntas sobre WhatsApp, e-mail, agenda, arquivos ou o computador têm ação própria: nunca olhe a tela para elas. Se pede para MANDAR algo a alguém, é whatsapp_send, mesmo citando tela ou print.
 Exemplos:
 "qual a capital da Austrália?" -> {{"action":"reply","text":"Camberra, {sir}."}}
 "eu adoro café sem açúcar" -> {{"action":"reply","text":"Anotado, {sir}.","remember":"Gosta de café sem açúcar"}}
@@ -189,9 +191,11 @@ Exemplos:
 "mostra os arquivos da pasta downloads" -> {{"action":"use_computer"}}
 "como eu listo os serviços em execução no PowerShell?" -> {{"action":"ask_expert","query":"comando do PowerShell para listar os serviços em execução"}}
 "lista os serviços que estão rodando" -> {{"action":"use_computer"}}
+"o que está aberto no meu computador?" / "quais programas estão rodando?" -> {{"action":"use_computer"}} (lista janelas e processos; NÃO é olhar a tela)
 "tira um print da tela e manda pro João" -> {{"action":"whatsapp_send","contact":"João","message":"","screenshot":true}}
 "manda um print da metade direita pra Maria dizendo olha isso" -> {{"action":"whatsapp_send","contact":"Maria","message":"olha isso","screenshot":true,"region":"metade direita da tela"}}
 "manda pro Carlos que eu chego em 10 minutos" -> {{"action":"whatsapp_send","contact":"Carlos","message":"Estou chegando em 10 minutos","screenshot":false}}
+"quantas conversas não lidas eu tenho no whatsapp?" -> {{"action":"whatsapp_unread"}}
 "qual minha agenda de hoje no Outlook?" -> {{"action":"outlook","kind":"agenda","days":1}}
 "no Outlook, quais e-mails importantes ainda preciso responder?" -> {{"action":"outlook","kind":"emails","unread":false,"days":14}}
 Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem "8k", "detailed" ou "masterpiece". Se a mensagem vier com uma foto, você a vê: responda com "reply".""")
@@ -213,6 +217,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
                 self.memory.capture(goal)
             except Exception:
                 pass
+            if WA_UNREAD.search(lower) and not re.search(r"\b(mande|manda|envie|envia|enviar|responda|responde)\b", lower):
+                self.on_phase("working")
+                return self.whatsapp_unread(), None
             fast = netconf.try_answer(goal, sir)   # a table of switch ports and VLANs: the script is built right here, instantly and by the rules
             if fast:
                 self.validate_later(goal, fast, chat_id)   # the instant draft is shown now; the model checks it against the request in the background
@@ -318,6 +325,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         if a == "look_at_screen":
             self.on_phase("thinking")
             return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=self.parse_screen(goal) or d.get("screen")), None
+        if a == "whatsapp_unread":
+            self.on_phase("working")
+            return self.whatsapp_unread(), None
         if a == "whatsapp_send":
             self.on_phase("working")
             d["screen"] = self.parse_screen(goal) or d.get("screen")
@@ -456,15 +466,17 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
 - Cite a fonte pelo nome entre parênteses no final (fonte: ...). Responda em texto simples."""
 
     def quick_material(self, goal):
-        """The best notes and skill for a question, ready to attach to it (local lookup only: no internet, no extra model call)."""
-        hits = kb.search(goal, 3)
-        skill_hits = [h for h in skills_mod.search(goal, 2) if not h[1]["name"].startswith("desenvolver")][:1]
+        """The best notes and skills for a question, ready to attach to it (local lookup only: no internet, no extra model call). With the cloud model's huge context
+        this is generous (up to ~40 thousand characters, whole notes), which costs about a second and makes the answer rest on the curated material."""
+        hits = kb.search(goal, 6)
+        skill_hits = [h for h in skills_mod.search(goal, 2) if not h[1]["name"].startswith("desenvolver")][:2]
         parts = []
         if skill_hits:
-            parts.append(skills_mod.prompt_block(skill_hits, 1400))
+            parts.append(skills_mod.prompt_block(skill_hits, 6000))
         if hits and kb.good_enough(hits, goal):
-            parts.append("\n\n".join(f"[{t}]\n{txt[:900]}" for _, t, _src, txt in hits[:1]))
-        return "\n\n".join(parts)[:2400]
+            for _score, title, _src, txt in hits[:5]:
+                parts.append(f"[{title}]\n{txt[:9000]}")
+        return "\n\n".join(parts)[:40000]
 
     def expert_answer(self, goal, spoken=False, image=None, query=None):
         """Answers IT questions from the knowledge base; when it has nothing good it learns from the internet first."""
@@ -674,6 +686,24 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         g = set(tools.norm(goal).split())
         cmd = {"print", "tela", "manda", "mande", "envia", "envie", "whatsapp", "tire", "tira", "foto", "janela", "screenshot", "pra", "para"}
         return bool(m) and (len(m & g) / len(m) >= 0.6 or len(m & cmd) >= 2)
+
+    def whatsapp_unread(self):
+        """How many chats have unread messages, and from whom, read from the connected WhatsApp."""
+        sir = self.p.sir()
+        if not self.whatsapp.connected():
+            return f"O WhatsApp ainda não está conectado, {sir}, então não consigo ver as conversas. Conecte-o no menu lateral, em Conexões."
+        try:
+            chats = self.whatsapp.unread(self.on_status)
+        except wa_mod.NotConnected:
+            return f"A sessão do WhatsApp expirou, {sir}. Conecte-o de novo em Conexões."
+        except Exception as e:
+            return f"Não consegui ler o WhatsApp agora, {sir}: {str(e)[:160]}"
+        if not chats:
+            return f"Nenhuma conversa não lida no WhatsApp, {sir}."
+        total = sum(c["count"] for c in chats)
+        names = ", ".join(f"{c['title']} ({c['count']})" if c["count"] > 1 else c["title"] for c in chats[:8])
+        more = f" e mais {len(chats) - 8}" if len(chats) > 8 else ""
+        return f"O senhor tem {len(chats)} conversa{'s' if len(chats) != 1 else ''} não lida{'s' if len(chats) != 1 else ''} no WhatsApp ({total} {'mensagem' if total == 1 else 'mensagens'}): {names}{more}."
 
     def whatsapp_send(self, goal, d):
         """Sends a message and/or a screenshot (all of a screen, or just the part described) to a WhatsApp contact, after the user confirms."""

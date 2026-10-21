@@ -9,6 +9,8 @@ URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "minimax/minimax-m3.1-flash:free"
 KEY_FILE = ROOT / "openrouter.key"
 TEMPERATURE = 0.1
+HISTORY_MESSAGES = 1500      # conversation sent to the cloud model: measured 3.9 s to first text with 900 thousand characters of context
+HISTORY_CHARS = 600_000
 RETRY_AFTER_FAIL = 45   # seconds the cloud is skipped after an error, so an offline computer does not wait on every message
 
 
@@ -77,8 +79,8 @@ def _content(text, image):
 
 
 class OpenRouter:
-    def __init__(self, key, model=DEFAULT_MODEL):
-        self.key, self.model = key, model or DEFAULT_MODEL
+    def __init__(self, key, model=DEFAULT_MODEL, effort="low"):
+        self.key, self.model, self.effort = key, model or DEFAULT_MODEL, effort
         self.cancelled = threading.Event()
         self.response = None
 
@@ -94,9 +96,12 @@ class OpenRouter:
     def _post(self, messages, on_delta=None, retries=1):
         """Sends the messages; with on_delta the answer streams and on_delta(text so far) is called for every piece. Raises CloudError on failure."""
         self.cancelled.clear()
-        body = json.dumps({"model": self.model, "messages": messages, "stream": on_delta is not None, "temperature": TEMPERATURE}).encode("utf-8")
+        payload = {"model": self.model, "messages": messages, "stream": on_delta is not None, "temperature": TEMPERATURE}
+        if self.effort and not getattr(self, "_no_effort", False):
+            payload["reasoning"] = {"effort": self.effort}   # "minimal": the model thinks very little before answering (10 s instead of 40-115 s on a long script)
+        body = json.dumps(payload).encode("utf-8")
         headers = {"Authorization": "Bearer " + self.key, "Content-Type": "application/json", "HTTP-Referer": "https://github.com/techemanuel21-creator/gota", "X-Title": "Gota"}
-        for attempt in range(retries + 1):
+        for attempt in range(retries + 2):
             try:
                 req = urllib.request.Request(URL, data=body, headers=headers, method="POST")
                 self.response = urllib.request.urlopen(req, timeout=60)
@@ -107,6 +112,11 @@ class OpenRouter:
                     detail = json.loads(e.read().decode("utf-8", "ignore")).get("error", {}).get("message", "")
                 except Exception:
                     pass
+                if e.code == 400 and "reasoning" in payload and "reason" in detail.lower():   # this model does not take the setting: ask again without it, and remember
+                    self._no_effort = True
+                    payload.pop("reasoning")
+                    body = json.dumps(payload).encode("utf-8")
+                    continue
                 if e.code in (429, 502, 503, 504) and attempt < retries:
                     time.sleep(2)
                     continue
@@ -163,9 +173,9 @@ class OpenRouter:
     def chat(self, key, system, history, user_text, image=None, think=False, on_delta=None):
         msgs = [{"role": "system", "content": system}]
         kept, chars = [], 0
-        for r, t in reversed(history[-40:]):   # a long memory of the conversation (the cloud model reads it fast), newest first, within a size budget
+        for r, t in reversed(history[-HISTORY_MESSAGES:]):   # the WHOLE conversation (the cloud model reads 200 thousand tokens in a few seconds), newest first, within a size budget
             chars += len(t)
-            if chars > 30000 and kept:
+            if chars > HISTORY_CHARS and kept:
                 break
             kept.append({"role": "user" if r == "user" else "assistant", "content": t})
         msgs += kept[::-1]
@@ -207,8 +217,9 @@ class Hybrid:
         if not key:
             return None
         model = self.settings.get("cloud_model") or DEFAULT_MODEL
-        if self._cloud is None or self._cloud.key != key or self._cloud.model != model:
-            self._cloud = OpenRouter(key, model)
+        effort = self.settings.get("cloud_effort") or "low"
+        if self._cloud is None or self._cloud.key != key or self._cloud.model != model or self._cloud.effort != effort:
+            self._cloud = OpenRouter(key, model, effort)
         return self._cloud
 
     def cloud_ready(self):

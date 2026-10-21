@@ -95,3 +95,12 @@ O agente (modo de tarefas, projetos e rotinas) ganhou, em camadas e sem deixar o
 **Segurança em camadas:** proibido (senhas, apagar repositório, chaves), pede confirmação (enviar, comprar, apagar, site novo, instalar) e livre (leitura). O que vem de páginas, arquivos, GitHub e servidores MCP é marcado como **dados externos**: nunca é obedecido como ordem. Rotinas rodam sem aprovação humana, então recusam qualquer ação que altere o computador.
 
 **Limites honestos:** profundidade de raciocínio, janela de contexto, visão e fluência em outros idiomas dependem do modelo (o da nuvem é muito melhor que o Gemma offline). Não há sessões na nuvem nem ambiente isolado remoto: o Gota roda na sua máquina Windows. As páginas geradas guardam estado só no navegador (localStorage), sem banco compartilhado.
+
+## Contexto enorme e respostas rápidas (nuvem)
+
+- **Raciocínio curto:** o modelo da nuvem é chamado com esforço de raciocínio *baixo* (um script longo caiu de 40 a 115 s para cerca de 12 s, com qualidade parecida ou melhor). Dá para mudar em `cloud_effort` nas configurações.
+- **Conversa inteira:** a nuvem recebe a conversa toda (até 600 mil caracteres). Medido: com 900 mil caracteres de contexto o primeiro texto chega em 3,9 s e o modelo acha o dado escondido.
+- **Material da base grande:** perguntas de TI levam até 40 mil caracteres das melhores notas e habilidades, inteiras.
+- **Documentos inteiros:** `read_document` lê PDF/DOCX/texto de até 700 mil caracteres numa chamada só (572 mil caracteres: 4,2 s). Acima disso, lê em partes ao mesmo tempo.
+- **Repositório inteiro:** `ask_codebase` lê o projeto todo (75 arquivos, 693 mil caracteres: 4,9 s) e responde com `arquivo:linha`. Em projetos, o agente já recebe os arquivos no primeiro passo e gasta menos passos lendo.
+- **Roteamento:** pedidos explícitos (conversas não lidas do WhatsApp, agenda, abrir programas, clima, horas) vão direto ao lugar certo sem chamar o modelo; o resto o modelo roteia em 1 a 4 s. Perguntas sobre WhatsApp, e-mail ou arquivos nunca mais "olham a tela".

@@ -21,7 +21,7 @@ ROLE_TEXT = {
 }
 # tools that only read and do not depend on each other: when asked together in one step they run at the same time
 PARALLEL_SAFE = {"list_dir", "read_file", "search_files", "regex_search", "web_page", "web_search", "kb_search", "system_info", "network_info", "repo_map",
-                 "calculate", "skill", "read_document", "chat_search", "memory_search"}
+                 "calculate", "skill", "read_document", "chat_search", "memory_search", "ask_codebase"}
 PROJECT_STEPS = 30   # a coding task needs many more steps than a question
 OBS_LIMIT = 2500
 READ_ONLY = re.compile(
@@ -189,7 +189,7 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
 
     # ------------------------------------------------------------------ roles
     SUB_TOOLS = {"list_dir", "read_file", "search_files", "regex_search", "system_info", "processes", "network_info", "web_search", "web_page",
-                 "kb_search", "skill", "calculate", "screen_look", "repo_map", "run_command", "read_document", "chat_search", "memory_search", "final"}
+                 "kb_search", "skill", "calculate", "screen_look", "repo_map", "run_command", "read_document", "chat_search", "memory_search", "ask_codebase", "final"}
 
     @property
     def role(self):
@@ -350,6 +350,14 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
             suggested = skills.search(goal, 1)
             if suggested:   # a ready procedure for this kind of task: follow it instead of improvising
                 message += "\n\nHABILIDADE SUGERIDA (siga estes passos, usando as ferramentas para executar o que for possível):\n" + skills.prompt_block(suggested, 1200)
+            if role == "projeto" and getattr(llm, "cloud_ready", lambda: False)() and self.project:
+                try:
+                    files = self.gather_project(Path(self.project), 250_000)
+                    if files:
+                        message += "\n\nCONTEXTO DO PROJETO (arquivos já lidos, com número de linha; não precisa ler de novo, só os que mudar):\n" + "\n\n".join(
+                            f"=== {n} ===\n" + "\n".join(f"{i + 1}: {l}" for i, l in enumerate(t.splitlines())) for n, t in files)
+                except Exception:
+                    pass
             plan = [] if sub else self._plan(goal)
             if plan and not sub and not quiet and role == "principal" and self.brain.settings.get("plan_approval") is not False:
                 approve = getattr(self, "approve_plan", None)   # "plan mode": show the plan and wait for a yes before touching anything
