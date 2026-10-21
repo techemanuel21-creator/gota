@@ -364,6 +364,8 @@ def speakable(text):
     """What is worth reading aloud: code blocks become one short remark. Stable while the text grows (the old part never changes)."""
     import re
     marker = " (o comando está no chat) "
+    from .brain import clean_glitch   # a bilingual glitch must never be read aloud
+    text = clean_glitch(text)
     s = re.sub(r"```.*?```", marker, text, flags=re.S)
     cut = s.find("```")   # a block that is still being written
     return s if cut < 0 else s[:cut] + marker

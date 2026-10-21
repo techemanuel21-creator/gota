@@ -933,6 +933,25 @@ class SpeakableText(unittest.TestCase):
         self.assertEqual(out, "O JOB_TAPE_SEMANAL_SEG aparece como Stopped, Failed, veja Details e Tape, fim em 21/10/2026.")
         self.assertNotRegex(out, r"[\u201c\u201d*\[\]|]")
 
+class GlitchCleaning(unittest.TestCase):
+    BAD = ("Quem se une aos outros para|the purpose of Aggression|bater em você; se ainda causar ou Oncology participates in|participar de agressão contra você, não é seu amigo.")
+
+    def test_bilingual_fragments_between_bars_are_dropped(self):
+        self.assertEqual(brain.clean_glitch(self.BAD), "Quem se une aos outros para bater em você; se ainda causar ou participar de agressão contra você, não é seu amigo.")
+
+    def test_pipelines_tables_and_code_are_untouched(self):
+        for ok in ("Use Get-Process | Select Name no PowerShell.", "| a | b |\n|---|---|\n| 1 | 2 |", "```powershell\nGet-A|Get-B\n```\nfim"):
+            self.assertEqual(brain.clean_glitch(ok), ok)
+
+    def test_streaming_text_is_cleaned_before_it_is_shown_or_spoken(self):
+        from gota import voice
+        self.assertNotIn("|", voice.speakable(self.BAD))
+        seen = []
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        b.on_partial = seen.append
+        b.stream_to_ui()('{"action":"reply","text":"' + self.BAD + '"}')
+        self.assertTrue(seen and "|" not in seen[-1])
+
 if __name__ == "__main__":
     unittest.main()
 
