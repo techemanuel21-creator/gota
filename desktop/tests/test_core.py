@@ -732,6 +732,43 @@ class NetconfFastPath(unittest.TestCase):
         self.assertIsNone(netconf.try_answer("Trunk:\n5 e 6; A\nVlan acess 2\n6 a 8; B\n"))     # port 6 twice: ambiguous
         self.assertIsNone(netconf.try_answer("41; Link02\n42; Link01"))                          # no heading: which vlan/mode?
 
+class ValidateLater(unittest.TestCase):
+    def test_instant_draft_then_model_check(self):
+        import time
+        from gota import brain, netconf
+        sent = []
+
+        class Cloud:
+            def cloud_ready(self): return True
+            def one_shot(self, system, user, image=None, on_delta=None): return '{"ok": true}'
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: Cloud(), images=None)
+        b.followup = lambda cid, text: sent.append(text)
+        reply, _ = b.run(NetconfFastPath.REQUEST, [], "t")
+        self.assertIn("```cisco", reply)                       # shown at once
+        for _ in range(50):
+            if sent:
+                break
+            time.sleep(0.05)
+        self.assertTrue(sent and sent[0].startswith("✓"))      # and checked afterwards
+
+    def test_a_problem_found_by_the_model_arrives_with_the_fix(self):
+        import time
+        from gota import brain
+        sent = []
+
+        class Cloud:
+            def cloud_ready(self): return True
+            def one_shot(self, system, user, image=None, on_delta=None): return '{"ok": false, "problemas": ["porta 38 foi tocada"], "fix": "configure terminal\\nend"}'
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: Cloud(), images=None)
+        b.followup = lambda cid, text: sent.append(text)
+        b.run(NetconfFastPath.REQUEST, [], "t")
+        for _ in range(50):
+            if sent:
+                break
+            time.sleep(0.05)
+        self.assertIn("porta 38", sent[0])
+        self.assertIn("```cisco", sent[0])
+
 if __name__ == "__main__":
     unittest.main()
 

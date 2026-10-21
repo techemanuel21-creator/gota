@@ -88,6 +88,7 @@ class App(tk.Tk):
         self.brain = brain_mod.Brain(self.profile, self.settings, lambda: self.gemma, self.images, self._status, self._notify)
         self.brain.confirm = self.confirm_sync
         self.brain.confirm_message = self.confirm_message_sync
+        self.brain.followup = self.followup
         self.brain.agent.approve_plan = self.approve_plan_sync          # "plan mode": the plan is shown and approved before the agent acts
         self.brain.agent.on_plan_progress = lambda plan, done: self.ui(self._plan_card, plan, done)
         self.brain.hide_window = self.hide_for_capture
@@ -248,6 +249,14 @@ class App(tk.Tk):
         self.ui(show)
         done.wait(180)
         return result["ok"]
+
+    def followup(self, chat_id, text):
+        """A message from Gota that arrives on its own after the answer (for example the model's check of an instant script)."""
+        def show():
+            self.chats.append(chat_id, "gota", text)
+            if self.settings.get("current_chat") == chat_id and hasattr(self, "msgs") and self.msgs.winfo_exists():
+                self.add_message("gota", text)
+        self.ui(show)
 
     def approve_plan_sync(self, goal, plan):
         """Called from the agent's worker thread: shows the plan and waits for Executar / Cancelar."""

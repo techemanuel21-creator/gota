@@ -1,5 +1,5 @@
 """Turns one request into an answer: instant answers first, then tools, then the Gemma model."""
-import json, re, time
+import json, re, threading, time
 from pathlib import Path
 from datetime import datetime
 from . import netconf, memory as memory_mod, agent as agent_mod, kb, quick, skills as skills_mod, tools, outlook as outlook_mod, whatsapp as wa_mod
@@ -28,6 +28,7 @@ AGENT_WORDS = re.compile(
     r"docker|zip|compacta|descompacta|converte|converter|log|logs|renomeia|renomear|organiza|organizar|limpa|limpar|temporarios|cache|"
     r"agende|monitora|monitorar|avise quando|variaveis de ambiente|sql|banco de dados|sqlite|traduz|traduza|"
     r"transcreve|transcrever|varredura|segredos|requisicao|testes|pytest|modo agente)\b")
+SCRIPT_REQUEST = re.compile(r"\b(crie|criar|gere|gerar|escreva|escrever|monte|montar|configure|configurar|faca|fazer|preciso de|me de|me passe)\b.*\b(script|comando|comandos|configuracao|config|playbook|dockerfile|regra|query|consulta|sql|one-?liner|codigo)\b", re.S)
 TECH_WORDS = re.compile(
     r"\b(windows|linux|ubuntu|debian|centos|rhel|powershell|cmd|registro|firewall|vpn|dns|dhcp|active directory|gpo|ldap|kerberos|"
     r"ransomware|malware|virus|phishing|cve|vulnerabilidade|pentest|nmap|ssh|rdp|smb|kubernetes|k8s|veeam|backup|restore|restauracao|"
@@ -214,6 +215,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
                 pass
             fast = netconf.try_answer(goal, sir)   # a table of switch ports and VLANs: the script is built right here, instantly and by the rules
             if fast:
+                self.validate_later(goal, fast, chat_id)   # the instant draft is shown now; the model checks it against the request in the background
                 return fast, None
             if is_retry(lower) and self.last_image_prompt:
                 return self.draw(self.last_image_prompt)
@@ -263,6 +265,8 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
                 if material:
                     user_text += "\n[MATERIAL DA BASE (use se ajudar; ignore se não tiver relação)]\n" + material
                 user_text += "\n[Responda direto com action reply, sem ask_expert: você já sabe responder perguntas de TI]"
+                if SCRIPT_REQUEST.search(lower):   # a script/command/config was asked for: the code in one block, no comments, at most two lines after it (fewer tokens = faster)
+                    user_text += "\n[Entregue só o código num bloco, sem comentários dentro dele e com no máximo 2 linhas de observação depois]"
             raw = llm.chat(chat_id, self.system_prompt(), turns, user_text, image, False, on_delta=None if will_override else self.stream_to_ui())
         except Exception as e:
             return f"Perdão, {sir}, tive um problema ao pensar: {e}", None
@@ -279,6 +283,33 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             self.p.remember(str(data["remember"]))
             self.memory.add("user", str(data["remember"]))
         return self.act(data, goal, lower, image, asked)
+
+    VALIDATE_SYSTEM = ("Você confere um script de TI contra o pedido original. Verifique: 1) cada porta/item do pedido foi configurado com o modo, as VLANs e a descrição pedidos; "
+                       "2) nenhuma porta ou item fora do pedido foi tocado; 3) nada foi inventado (VLANs permitidas, nativa, senhas); 4) a sintaxe é válida para o equipamento. "
+                       'Responda SOMENTE JSON: {"ok":true} se tudo está certo, ou {"ok":false,"problemas":["o que está errado, curto"],"fix":"o script corrigido completo"}.')
+
+    def validate_later(self, request, answer, chat_id):
+        """Instant draft first, model check after: when the cloud model is available it reads the draft against the request (a few seconds) and the result
+        arrives in the chat as a follow-up. Only a real problem is shown in full; a clean check is one line."""
+        llm = self.llm()
+        if not getattr(self, "followup", None) or llm is None or not getattr(llm, "cloud_ready", lambda: False)():
+            return
+        code = re.search(r"```[\w]*\n(.*?)```", answer, re.S)
+
+        def work():
+            try:
+                out = llm.one_shot(self.VALIDATE_SYSTEM, f"PEDIDO:\n{request[:3000]}\n\nSCRIPT:\n{(code.group(1) if code else answer)[:6000]}")
+                data = self.extract_json(out) or {}
+            except Exception:
+                return
+            if data.get("ok") is True:
+                self.followup(chat_id, "✓ Conferi o script contra o seu pedido: está de acordo (portas, modos, VLANs e descrições).")
+            elif data.get("ok") is False and (data.get("problemas") or data.get("fix")):
+                msg = "⚠ Ao conferir, encontrei o que ajustar:\n" + "\n".join(f"- {x}" for x in (data.get("problemas") or [])[:5])
+                if data.get("fix"):
+                    msg += "\n\nScript corrigido:\n\n```cisco\n" + str(data["fix"]).strip().strip("`") + "\n```"
+                self.followup(chat_id, msg)
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------ actions
     def act(self, d, goal, lower, image, asked):
