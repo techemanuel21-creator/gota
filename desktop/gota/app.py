@@ -69,6 +69,7 @@ class App(tk.Tk):
         self.gemma = None
         self.speaker = None
         self.listener = voice.Listener()
+        self.listener.preferred = self.settings.get("mic_name") or ""
         self.pending_image = None
         self.busy = False
         self.dictating = False
@@ -366,6 +367,65 @@ class App(tk.Tk):
         RoundButton(row, "Salvar e continuar", save, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE, height=42, width=190).pack(side="left", padx=6)
         RoundButton(row, "Usar só offline", lambda: (self.settings.set("use_cloud", False), finish()), parent_bg=SURFACE, height=42, width=150).pack(side="left", padx=6)
 
+    def mic_dialog(self):
+        """Choose the microphone (a headset, say) or leave it automatic, and test that it hears."""
+        d = Dialog(self, "Microfone", 560, 470)
+        tk.Label(d.body, text="Automático segue o microfone padrão do Windows e troca sozinho se ele ficar mudo (por exemplo ao colocar o fone). "
+                              "Se o Gota não te ouvir, escolha aqui o microfone do fone e teste.", bg=SURFACE, fg=MUTED, wraplength=510, justify="left", font=("Segoe UI", 10)).pack(anchor="w")
+        choice = tk.StringVar(value=self.settings.get("mic_name") or "")
+        box = tk.Frame(d.body, bg=SURFACE)
+        box.pack(fill="x", pady=(10, 0))
+        status = tk.Label(d.body, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10), wraplength=510, justify="left")
+
+        def pick():
+            self.settings.set("mic_name", choice.get())
+            self.listener.preferred = choice.get()
+            self.listener.skip.clear()
+
+        def refresh():
+            for w in box.winfo_children():
+                w.destroy()
+            options = [("Automático (padrão do Windows)", "")] + [(n, n) for _i, n in voice.input_devices()]
+            for label, val in options:
+                tk.Radiobutton(box, text=label, value=val, variable=choice, command=pick, bg=SURFACE, fg=TEXT, selectcolor=SURFACE2, activebackground=SURFACE,
+                               activeforeground=TEXT, font=FONT, bd=0, highlightthickness=0, anchor="w").pack(fill="x", pady=3)
+
+        def test():
+            status.configure(text="Fale agora por 3 segundos…", fg=ACCENT)
+
+            def work():
+                import queue as _q, numpy as np
+                q = _q.Queue()
+                lis = self.listener
+                peak, err = 0, ""
+                try:
+                    with lis._stream(q):
+                        end = time.time() + 3
+                        while time.time() < end:
+                            try:
+                                peak = max(peak, int(np.abs(np.frombuffer(q.get(timeout=0.3), dtype=np.int16)).max(initial=0)))
+                            except _q.Empty:
+                                pass
+                except Exception as e:
+                    err = str(e)
+                name = lis.device_name
+
+                def done():
+                    if err:
+                        status.configure(text=f"Não consegui abrir o microfone: {err}", fg=RED)
+                    elif peak < 60:
+                        status.configure(text=f"“{name}”: quase nenhum som (nível {peak}). Escolha outro microfone ou confira o volume do Windows.", fg=RED)
+                    else:
+                        status.configure(text=f"“{name}”: te ouvi bem (nível {peak}).", fg=GREEN)
+                self.ui(done)
+            threading.Thread(target=work, daemon=True).start()
+        refresh()
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(12, 0))
+        RoundButton(row, "Testar", test, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="left")
+        RoundButton(row, "Atualizar lista", refresh, parent_bg=SURFACE).pack(side="left", padx=8)
+        status.pack(anchor="w", pady=(10, 0))
+
     def cloud_dialog(self):
         """Settings for the online brain: key, on/off, and a test."""
         d = Dialog(self, "Nuvem (OpenRouter)", 560, 430)
@@ -568,7 +628,7 @@ class App(tk.Tk):
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9), anchor="w")
         self.dl_label.pack(fill="x", padx=8)
-        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
+        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🎤  Microfone", self.mic_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
                           ("📜  Registro de ações", self.audit_dialog), ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial)):
             self._link(foot, text, cmd, fg=MUTED)
         self._poll_download()

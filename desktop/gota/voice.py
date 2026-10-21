@@ -197,16 +197,58 @@ def apply_gain(samples, target_peak=9000.0, max_gain=40.0):
     return np.clip(x * gain, -32768, 32767).astype(np.int16), gain
 
 
-def default_microphone():
-    """Name of the microphone Windows uses right now (re-read each time, so changing the default in Windows is followed)."""
+HEADSET_WORDS = ("headset", "fone", "headphone", "auricular", "hands-free", "handsfree", "bluetooth", "usb")
+
+
+def input_devices():
+    """[(index, name)] of the microphones Windows offers (MME list, the one Windows itself orders). Re-reads the device list every time."""
     import sounddevice as sd
     try:
         sd._terminate()
         sd._initialize()
-        idx = sd.default.device[0]
-        if idx is None or idx < 0:
-            idx = sd.query_hostapis(0)["default_input_device"]
-        return idx, sd.query_devices(idx)["name"]
+    except Exception:
+        pass
+    out, seen = [], set()
+    for i, d in enumerate(sd.query_devices()):
+        if d.get("max_input_channels", 0) > 0 and d.get("hostapi") == 0:
+            key = d["name"].strip().lower()
+            if key not in seen and "mapper" not in key and "mapeador" not in key:
+                seen.add(key)
+                out.append((i, d["name"].strip()))
+    return out
+
+
+def devices_signature():
+    """Changes when a headset is plugged in or removed (cheap: asks Windows' wave-in list, no audio library re-initialisation)."""
+    try:
+        return ctypes.windll.winmm.waveInGetNumDevs()
+    except Exception:
+        return 0
+
+
+def default_microphone(preferred="", skip=()):
+    """(index, name) of the microphone to use now. Order: the one he picked in the Microfone window, the one Windows has as default, then any other
+    (headsets first), skipping the ones that were silent. The device list is re-read each time, so plugging a headset is followed."""
+    import sounddevice as sd
+    try:
+        devices = input_devices()
+        if not devices:
+            return None, "microfone padrão"
+        if preferred:
+            for i, n in devices:
+                if preferred.lower() in n.lower():
+                    return i, n
+        default = sd.default.device[0]
+        if default is None or default < 0:
+            default = sd.query_hostapis(0)["default_input_device"]
+        if default not in skip and default >= 0:
+            return default, sd.query_devices(default)["name"]
+        rest = [(i, n) for i, n in devices if i not in skip]
+        rest.sort(key=lambda d: not any(w in d[1].lower() for w in HEADSET_WORDS))
+        if rest:
+            return rest[0]
+        skip.clear() if hasattr(skip, "clear") else None
+        return default, sd.query_devices(default)["name"]
     except Exception:
         return None, "microfone padrão"
 
@@ -219,6 +261,9 @@ class Listener:
         self.model = None
         self.cancel = threading.Event()
         self.device_name = ""
+        self.device_index = None
+        self.preferred = ""      # the microphone he chose in the Microfone window ("" = follow Windows)
+        self.skip = set()        # microphones that were silent in this session: the next try uses another one
         self.peak = 0
 
     def _model(self, progress=lambda p: None):
@@ -232,12 +277,48 @@ class Listener:
         self._model(progress)
 
     def _stream(self, q):
-        import sounddevice as sd
-        idx, self.device_name = default_microphone()
+        """An open microphone stream. Tries the chosen / default microphone; when a device cannot be opened (a headset that only offers its own
+        sample rate or two channels, for instance) it adapts, and if it still fails it moves on to the next microphone."""
+        import numpy as np, sounddevice as sd
+        last = None
+        for _ in range(6):
+            idx, self.device_name = default_microphone(self.preferred, self.skip)
+            self.device_index = idx
+            try:
+                info = sd.query_devices(idx) if idx is not None else sd.query_devices(kind="input")
+            except Exception:
+                info = {"default_samplerate": self.RATE, "max_input_channels": 1}
+            native = int(info.get("default_samplerate") or self.RATE)
+            for rate, channels in ((self.RATE, 1), (native, 1), (self.RATE, 2), (native, 2)):
+                if channels > int(info.get("max_input_channels") or 1):
+                    continue
 
-        def cb(data, frames, t, status):
-            q.put(bytes(data))
-        return sd.RawInputStream(samplerate=self.RATE, blocksize=3200, dtype="int16", channels=1, device=idx, callback=cb)
+                def cb(data, frames, t, status, rate=rate, channels=channels):
+                    x = np.frombuffer(bytes(data), dtype=np.int16)
+                    if channels > 1:
+                        x = x[::channels]
+                    if rate != self.RATE:   # a headset that only runs at its own rate: bring it to 16 kHz
+                        n = int(len(x) * self.RATE / rate)
+                        x = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x.astype(np.float32)).astype(np.int16)
+                    q.put(x.tobytes())
+                try:
+                    stream = sd.RawInputStream(samplerate=rate, blocksize=int(rate * 0.2), dtype="int16", channels=channels, device=idx, callback=cb)
+                    stream.start()
+                    stream.stop()   # opened fine; the caller starts it through the context manager
+                    return stream
+                except Exception as e:
+                    last = e
+            if idx is None:
+                break
+            self.skip.add(idx)   # this one cannot be opened at all: try the next microphone
+        raise RuntimeError(f"Não consegui abrir nenhum microfone ({last})")
+
+    def _note_level(self):
+        """A microphone that stayed silent is skipped next time (the headset may be the one that works); one that was heard stays."""
+        if self.peak < 60 and self.device_index is not None and not self.preferred:
+            self.skip.add(self.device_index)
+        elif self.peak >= 200:
+            self.skip.clear()
 
     def _block(self, data):
         """Amplifies a quiet block and remembers the loudest level heard (to explain a silent microphone)."""
@@ -248,7 +329,8 @@ class Listener:
 
     def explain_silence(self):
         if self.peak < 60:
-            return f"O microfone \"{self.device_name}\" quase não capta som (nível {self.peak}). Confira se ele não está mudo e o volume de entrada, em Configurações > Sistema > Som."
+            return (f"O microfone \"{self.device_name}\" quase não capta som (nível {self.peak}). Na próxima vez tento outro microfone; "
+                    "se preferir, escolha o certo em Microfone, no menu lateral, ou confira o volume em Configurações > Sistema > Som.")
         return f"Captei som em \"{self.device_name}\" mas não entendi nenhuma palavra. Fale um pouco mais perto e devagar."
 
     WHISPER_SIZE = "small"
@@ -346,25 +428,34 @@ class Listener:
                         heard, last_voice = part, now
                         on_partial(part)
                 if last_voice is None and now - started > timeout:
+                    self._note_level()
                     return ""
                 if last_voice is not None and now - last_voice > silence or now - started > max_seconds:
                     return self.refine(bytes(buf), json.loads(rec.FinalResult()).get("text", "") or heard)
         return ""
 
     def wait_for_wake_word(self, stop: threading.Event):
-        """Blocks until someone says 'Hey Gota' (or stop is set). Returns True when heard."""
+        """Blocks until someone says 'Hey Gota' (or stop is set). Returns True when heard. When a headset is plugged in or removed the
+        microphone is reopened on the right device."""
         from vosk import KaldiRecognizer
-        rec = KaldiRecognizer(self._model(), self.RATE, WAKE_GRAMMAR)
-        q = queue.Queue()
-        with self._stream(q):
-            while not stop.is_set():
-                try:
-                    data = self._block(q.get(timeout=0.3))
-                except queue.Empty:
-                    continue
-                if rec.AcceptWaveform(data):
-                    if "gota" in json.loads(rec.Result()).get("text", ""):
-                        return True
+        while not stop.is_set():
+            rec = KaldiRecognizer(self._model(), self.RATE, WAKE_GRAMMAR)
+            q = queue.Queue()
+            signature, checked = devices_signature(), time.time()
+            with self._stream(q):
+                while not stop.is_set():
+                    if time.time() - checked > 2:
+                        checked = time.time()
+                        if devices_signature() != signature:
+                            self.skip.clear()
+                            break   # the set of microphones changed: reopen
+                    try:
+                        data = self._block(q.get(timeout=0.3))
+                    except queue.Empty:
+                        continue
+                    if rec.AcceptWaveform(data):
+                        if "gota" in json.loads(rec.Result()).get("text", ""):
+                            return True
         return False
 
 
