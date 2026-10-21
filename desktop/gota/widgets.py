@@ -280,33 +280,71 @@ def _selectable(widget, root):
 
 
 def _fit_height(t):
-    """After the box is on screen, sets its height to exactly the number of wrapped lines it shows."""
+    """After the box is on screen, sets its height to what its content really needs (wrapped lines; taller lines such as headings are measured in pixels)."""
     try:
-        crossed = t.count("1.0", "end-1c", "displaylines")   # Tk counts the line breaks BETWEEN the two indices: a 2-line paragraph gives 1
-        crossed = crossed[0] if isinstance(crossed, (tuple, list)) else (crossed or 0)
-        n = max(1, int(crossed) + 1)
+        ls = getattr(t, "_ls", None)
+        if ls:   # prose with headings/lists: size by pixels, so bigger fonts and paragraph spacing are not clipped
+            t.update_idletasks()   # Tk measures line heights lazily: make sure every line is measured before counting
+            px = t.count("1.0", "end", "ypixels")
+            px = px[0] if isinstance(px, (tuple, list)) else (px or 0)
+            n = max(1, -(-int(px) // ls))
+        else:
+            crossed = t.count("1.0", "end-1c", "displaylines")   # Tk counts the line breaks BETWEEN the two indices: a 2-line paragraph gives 1
+            crossed = crossed[0] if isinstance(crossed, (tuple, list)) else (crossed or 0)
+            n = max(1, int(crossed) + 1)
     except (tk.TclError, TypeError, ValueError):
         return
     if int(t["height"]) != n:
         t.configure(height=n)
 
 
+_HEAD = re.compile(r"^\s{0,3}(#{1,3})\s+(.*?)\s*#*\s*$")
+_BULLET = re.compile(r"^(\s*)[-*•]\s+(.*)$")
+_NUMBERED = re.compile(r"^(\s*)(\d{1,3})[.)]\s+(.*)$")
+
+
 def _prose(parent, text, font, bg, width_px, root):
+    """A selectable text box with light markdown: # headings, - / * bullets (indented), 1. numbered lines, **bold** and `code` anywhere."""
     f = tkfont.Font(font=font)
     chars = max(8, width_px // max(1, f.measure("0")))
     t = tk.Text(parent, width=chars, height=_est_lines(text, f, width_px), wrap="word", bg=bg, fg=TEXT, font=font, relief="flat", bd=0, highlightthickness=0,
                 padx=0, pady=0, cursor="xterm", selectbackground=ACCENT, selectforeground="#0B0E1F", inactiveselectbackground=HOVER, insertwidth=0, takefocus=0)
     t.tag_configure("b", font=(font[0], font[1], "bold"))
     t.tag_configure("m", font=("Consolas", font[1] - 1), background=CODE_BG, foreground="#E7E9FF")
-    for part in _INLINE.split(text):
-        if part.startswith("**") and part.endswith("**") and len(part) > 4:
-            t.insert("end", part[2:-2], "b")
-        elif part.startswith("`") and part.endswith("`") and len(part) > 2:
-            t.insert("end", part[1:-1], "m")
+    for level, grow in ((1, 5), (2, 3), (3, 1)):
+        t.tag_configure(f"h{level}", font=(font[0], font[1] + grow, "bold"), spacing1=8 if level < 3 else 4, spacing3=2)
+    for depth in range(3):
+        t.tag_configure(f"li{depth}", lmargin1=8 + depth * 18, lmargin2=26 + depth * 18, spacing1=1)
+    marked = False
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        tags, body = (), line
+        m = _HEAD.match(line)
+        if m:
+            tags, body, marked = (f"h{len(m.group(1))}",), m.group(2), True
         else:
-            t.insert("end", part)
+            m = _BULLET.match(line)
+            if m:
+                tags, body, marked = (f"li{min(2, len(m.group(1).replace(chr(9), '  ')) // 2)}",), "•\u00a0\u00a0" + m.group(2), True
+            else:
+                m = _NUMBERED.match(line)
+                if m:
+                    tags, body, marked = (f"li{min(2, len(m.group(1).replace(chr(9), '  ')) // 2)}",), f"{m.group(2)}.\u00a0\u00a0" + m.group(3), True
+        for part in _INLINE.split(body):
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                t.insert("end", part[2:-2], tags + ("b",))
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                t.insert("end", part[1:-1], tags + ("m",))
+            elif part:
+                t.insert("end", part, tags)
+        if i < len(lines) - 1:
+            t.insert("end", "\n", tags)
+    if marked:
+        t._ls = f.metrics("linespace")
     _selectable(t, root)
     t.bind("<Configure>", lambda e: _fit_height(t))
+    if marked:
+        t.after(80, lambda: t.winfo_exists() and _fit_height(t))   # once more after the first layout
     return t
 
 

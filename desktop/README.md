@@ -61,7 +61,7 @@ O [OpenClaude](https://github.com/Twigpine/openclaude) é um agente de programa�
 | Mapa do repositório | ferramenta `repo_map` (estrutura, arquivos-chave, classes e funções) |
 | Busca na web com reserva | Bing e, se falhar, DuckDuckGo |
 
-**Não trazido, de propósito:** provedores de nuvem e chaves de API (contraria "offline e gratuito"), MCP, extensão do VS Code, servidor gRPC, hooks e o "buddy" de terminal. São infraestrutura de desenvolvedor para a linha de comando e não fazem sentido num assistente local. Também não torna o modelo de 2B mais inteligente: isso depende do modelo, não do agente.
+**Não trazido, de propósito:** servidor gRPC, hooks e o "buddy" de terminal. São infraestrutura de desenvolvedor para a linha de comando e não fazem sentido num assistente local. Também não torna o modelo de 2B mais inteligente: isso depende do modelo, não do agente. A nuvem (OpenRouter/MiniMax) e a extensão do VS Code foram trazidas depois; veja as seções "Nuvem e offline" do [README raiz](../README.md) e "Integração com o VS Code" deste arquivo.
 
 ## Limites honestos
 

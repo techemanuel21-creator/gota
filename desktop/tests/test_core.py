@@ -434,6 +434,28 @@ class TestCiscoSkill(unittest.TestCase):
                 "Trunk: 39 e 40; Lan dos FWs\nVlan acess 1 e voice vlan 13: 13 a 27; PC/Ramal")
         self.assertEqual(skills.search(goal, 1)[0][1]["name"], "cisco-configurar-portas-e-vlans")
 
+class TestMarkdownAndSteps(unittest.TestCase):
+    def test_markdown_lines_are_tagged(self):
+        import tkinter as tk
+        from gota import widgets
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            box = widgets._prose(root, "# Título\n- um **item**\n1. primeiro\ntexto `código`", ("Segoe UI", 11), widgets.BG, 400, root)
+            tags = {name for name in box.tag_names() if box.tag_ranges(name)}
+            self.assertTrue({"h1", "li0", "b", "m"} <= tags)
+            self.assertIn("•", box.get("1.0", "end"))
+            self.assertNotIn("# ", box.get("1.0", "end"))
+        finally:
+            root.destroy()
+
+    def test_step_symbols(self):
+        from gota.app import App
+        self.assertEqual(App._step_symbol("read_file C:/x.py"), "📄")
+        self.assertEqual(App._step_symbol("run_command pytest"), "❯")
+        self.assertEqual(App._step_symbol("web_search veeam"), "🌐")
+        self.assertEqual(App._step_symbol("kb_search raid"), "•")
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -642,33 +642,39 @@ class App(tk.Tk):
         for w in self.sidebar.winfo_children():
             w.destroy()
         top = tk.Frame(self.sidebar, bg=SURFACE)
-        top.pack(fill="x", padx=18, pady=(18, 8))
+        top.pack(fill="x", padx=18, pady=(12, 4))
         tk.Label(top, image=sprites().frame("logo", 30, SURFACE), bg=SURFACE, bd=0).pack(side="left")
         tk.Label(top, text="Gota", bg=SURFACE, fg=TEXT, font=("Segoe UI", 13, "bold")).pack(side="left", padx=10)
         # no list of chats or projects here: four big buttons open them (and create new ones)
         for text, cmd, hot in (("＋   Nova conversa", self.new_chat, True), ("＋   Novo projeto", self.create_project_dialog, True),
                                ("☰   Selecionar conversa", self.chats_dialog, False), ("📁   Selecionar projeto", self.projects_dialog, False)):
-            row = tk.Label(self.sidebar, text=text, bg=SURFACE, fg=PRIMARY if hot else TEXT, anchor="w", font=("Segoe UI", 11, "bold" if hot else "normal"), padx=14, pady=10, cursor="hand2")
-            row.pack(fill="x", padx=10, pady=1)
+            row = tk.Label(self.sidebar, text=text, bg=SURFACE, fg=PRIMARY if hot else TEXT, anchor="w", font=("Segoe UI", 11, "bold" if hot else "normal"), padx=14, pady=6, cursor="hand2")
+            row.pack(fill="x", padx=10, pady=0)
             row.bind("<Enter>", lambda e, w=row: w.configure(bg=SURFACE2))
             row.bind("<Leave>", lambda e, w=row: w.configure(bg=SURFACE))
             row.bind("<Button-1>", lambda e, c=cmd: c())
-        tk.Frame(self.sidebar, bg=BORDER, height=1).pack(fill="x", padx=18, pady=(10, 6))
+        tk.Frame(self.sidebar, bg=BORDER, height=1).pack(fill="x", padx=18, pady=(6, 4))
         foot = tk.Frame(self.sidebar, bg=SURFACE)
-        foot.pack(side="bottom", fill="x", padx=14, pady=(8, 14))
+        foot.pack(side="bottom", fill="x", padx=14, pady=(4, 8))
         sw = tk.Frame(foot, bg=SURFACE)
         sw.pack(fill="x", padx=8, pady=(0, 6))
         tk.Label(sw, text='Escutar "Hey Gota"', bg=SURFACE, fg=TEXT, font=("Segoe UI", 10)).pack(side="left")
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
-        self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9), anchor="w")
+        self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 1), anchor="w", pady=0)   # grows only while something downloads
         self.dl_label.pack(fill="x", padx=8)
-        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🎤  Voz e microfone", self.mic_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
-                          ("📜  Registro de ações", self.audit_dialog), ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial)):
-            self._link(foot, text, cmd, fg=MUTED)
+        groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
+                  ("Conhecimento", (("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog))),
+                  ("Preferências", (("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("🎤  Voz e microfone", self.mic_dialog),
+                                    ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial))),
+                  ("Avançado", (("📜  Registro de ações", self.audit_dialog),)))
+        for label, links in groups:   # a small muted label above each group, no boxes: just spacing
+            tk.Label(foot, text=label.upper(), bg=SURFACE, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w", padx=10).pack(fill="x", pady=(6, 0))
+            for text, cmd in links:
+                self._link(foot, text, cmd, fg=MUTED, pad=2)
         self._poll_download()
 
-    def _link(self, parent, text, cmd, fg=TEXT):
-        row = tk.Label(parent, text=text, bg=SURFACE, fg=fg, anchor="w", font=("Segoe UI", 10), padx=10, pady=5, cursor="hand2")
+    def _link(self, parent, text, cmd, fg=TEXT, pad=5):
+        row = tk.Label(parent, text=text, bg=SURFACE, fg=fg, anchor="w", font=("Segoe UI", 10), padx=10, pady=pad, cursor="hand2")
         row.pack(fill="x")
         row.bind("<Enter>", lambda e: row.configure(bg=SURFACE2, fg=TEXT))
         row.bind("<Leave>", lambda e: row.configure(bg=SURFACE, fg=fg))
@@ -687,7 +693,8 @@ class App(tk.Tk):
     def _poll_download(self):
         if not getattr(self, "dl_label", None) or not self.dl_label.winfo_exists():
             return
-        self.dl_label.configure(text=f"🎨 Baixando o pintor… {self.images.percent}%" if self.images.downloading else "🎙 Baixando o modelo de voz…" if self.listener.whisper_downloading else "")
+        msg = f"🎨 Baixando o pintor… {self.images.percent}%" if self.images.downloading else "🎙 Baixando o modelo de voz…" if self.listener.whisper_downloading else ""
+        self.dl_label.configure(text=msg, font=("Segoe UI", 9 if msg else 1))
         self.after(2000, self._poll_download)
 
     def chat_menu(self, event, cid, title):
@@ -1191,6 +1198,22 @@ class App(tk.Tk):
             self._steps_card(steps)
         self.to_bottom()
 
+    FILE_TOOLS = ("file", "dir", "move", "rename", "report", "archive", "convert", "notebook", "search_files", "regex", "repo_map", "edit", "write", "read")
+    COMMAND_TOOLS = ("command", "git", "tests", "bash", "powershell", "run_", "schedule", "monitor", "process", "disk", "system", "env", "sql")
+    WEB_TOOLS = ("web_", "http", "browser", "kb_learn", "github", "mcp")
+
+    @classmethod
+    def _step_symbol(cls, line):
+        """📄 for files, ❯ for commands, 🌐 for the web, • for the rest (by the name of the tool the agent used)."""
+        name = line.split(" ", 1)[0].lower()
+        if any(k in name for k in cls.WEB_TOOLS):
+            return "🌐"
+        if any(k in name for k in cls.COMMAND_TOOLS):
+            return "❯"
+        if any(k in name for k in cls.FILE_TOOLS):
+            return "📄"
+        return "•"
+
     def _steps_card(self, steps):
         """A collapsible card listing what the agent did ("Executou 3 ações"), like Claude's tool cards."""
         row = tk.Frame(self.msgs, bg=BG)
@@ -1199,7 +1222,10 @@ class App(tk.Tk):
         card.pack(side="left", fill="x", expand=True)
         head = tk.Label(card, text=f"⚙  Executou {len(steps)} ação{'ões' if len(steps) != 1 else ''}   ▸", bg=SURFACE, fg=MUTED, font=("Segoe UI", 10), anchor="w", padx=14, pady=8, cursor="hand2")
         head.pack(fill="x")
-        body = tk.Label(card, text="\n".join(steps), bg=SURFACE, fg=MUTED, font=("Consolas", 9), anchor="w", justify="left", padx=14, pady=(0), wraplength=self.maxw(True) - 30)
+        body = tk.Frame(card, bg=SURFACE)
+        for line in steps:
+            tk.Label(body, text=f"{self._step_symbol(line)}  {line}", bg=SURFACE, fg=MUTED, font=("Consolas", 9), anchor="w", justify="left", padx=14,
+                     wraplength=self.maxw(True) - 40).pack(fill="x", pady=1)
 
         def toggle(_=None):
             if body.winfo_ismapped():
