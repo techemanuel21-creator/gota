@@ -908,6 +908,25 @@ class NetconfScope(unittest.TestCase):
         self.assertNotIn("1-52", out)
         self.assertIn("1-24", out)
 
+class ProblemLines(unittest.TestCase):
+    OCR = ("Processing full backups started at 20/10/2026\nO tSSP06MB1011 Fug backup: 09Kt reference not set to an instance of an object\n"
+           "O (SSP06MB101) Failed to backup some full backup filet s'app•ng the correspcnding incrementa/ backups\nBusy: Source 0% > Proxy 5% > Network 0% > Target 5%\n"
+           "Network traffic verification detected no corrupted blocks\nO Processing finished with errcrs 't 21/10/2026 01:38:36\n")
+
+    def test_every_cause_is_found_and_reassurance_is_not(self):
+        lines = tools.problem_lines(self.OCR)
+        self.assertEqual(len(lines), 3)
+        self.assertIn("reference not set", lines[0])           # the specific cause first
+        self.assertIn("Failed to backup", lines[1])
+        self.assertIn("finished with err", lines[2])           # the summary only after the causes
+        self.assertFalse(any("no corrupted blocks" in l for l in lines))
+
+    def test_tiles_read_the_whole_screen_once_each_line(self):
+        from PIL import Image
+        p = Path(tempfile.mkdtemp()) / "blank.png"
+        Image.new("RGB", (1200, 700), "white").save(p)
+        self.assertIsInstance(tools.ocr_tiles(p), str)          # runs the parallel reading without error on a blank screen
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -534,40 +534,90 @@ $result.Lines | ForEach-Object { $_.Text }
 def ocr_image(path, scale=2):
     """The text on a picture, read offline by Windows' own OCR (the languages installed for the user, e.g. Portuguese and English).
     Small text reads much better when the picture is enlarged first. Returns "" if nothing could be read."""
-    import subprocess, tempfile
+    import subprocess, tempfile, uuid
     from PIL import Image
     from .store import ROOT
-    src = Path(path)
+    src, tmp = Path(path), None
     try:
         im = Image.open(src)
         if scale > 1 and im.width * scale <= 6000 and im.height * scale <= 6000:
-            tmp = Path(tempfile.gettempdir()) / "gota_ocr.png"
+            tmp = Path(tempfile.gettempdir()) / f"gota_ocr_{uuid.uuid4().hex[:8]}.png"   # unique: several pictures are read at the same time
             im.convert("RGB").resize((im.width * scale, im.height * scale), Image.LANCZOS).save(tmp)
             src = tmp
         script = ROOT / "ocr.ps1"
-        script.write_text(_OCR_PS, "utf-8-sig")
+        if not script.exists() or script.read_text("utf-8-sig") != _OCR_PS:
+            script.write_text(_OCR_PS, "utf-8-sig")
         r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Path", str(src)],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, creationflags=0x08000000)
         return "\n".join(l for l in r.stdout.splitlines() if l.strip() and not l.startswith("# idioma"))
     except Exception:
         return ""
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
-PROBLEM = re.compile(r"(error|erro\b|failed|falha|fail\b|warning|aviso|exception|aborted|abortad|terminated|denied|negado|timeout|timed out|cannot|can't|unable|"
-                     r"n[aã]o foi poss[ií]vel|critical|cr[ií]tico|0x[0-9a-f]{4,8}|event id|corrupt|unreachable|refused|disconnected)", re.I)
+def ocr_tiles(path, cols=3, rows=2, scale=3, overlap=0.06):
+    """OCR of a whole screen read in tiles, each enlarged: small text (the lines of a log panel, a job list) that a single pass over the whole screen misreads or
+    skips comes out readable. The tiles are read at the same time. Returns the text in reading order (top-left to bottom-right), repeated lines dropped."""
+    import tempfile, uuid
+    from concurrent.futures import ThreadPoolExecutor
+    from PIL import Image
+    im = Image.open(path).convert("RGB")
+    if im.width < 900 or im.height < 500:
+        return ocr_image(path, scale)
+    w, h = im.width // cols, im.height // rows
+    boxes = [(max(0, int(c * w - overlap * w)), max(0, int(r * h - overlap * h)), min(im.width, int((c + 1) * w + overlap * w)), min(im.height, int((r + 1) * h + overlap * h)))
+             for r in range(rows) for c in range(cols)]
 
-
-def problem_lines(text, limit=4):
-    """The lines of an on-screen text that look like an error or warning (first few, without repeats)."""
+    def read(box):
+        tile = Path(tempfile.gettempdir()) / f"gota_tile_{uuid.uuid4().hex[:8]}.png"
+        try:
+            im.crop(box).save(tile)
+            return ocr_image(tile, scale)
+        finally:
+            try:
+                tile.unlink()
+            except OSError:
+                pass
+    with ThreadPoolExecutor(max_workers=len(boxes)) as pool:
+        texts = list(pool.map(read, boxes))
     seen, out = set(), []
+    for text in texts:
+        for line in text.splitlines():
+            key = re.sub(r"\W+", "", line.lower())
+            if line.strip() and key not in seen:
+                seen.add(key)
+                out.append(line.strip())
+    return "\n".join(out)
+
+
+# strong = what names a cause; weak = a summary that only says "something failed" (the cause is on the lines above it); NEGATED = reassurance, not a problem
+STRONG = re.compile(r"(error:|\berror\b|erro\b|failed|falha|exception|object reference|reference not set|not set to an instance|instance of an|cannot|can't|unable|denied|negado|timeout|timed out|aborted|abortad|corrupt(?!ed blocks)|"
+                    r"n[aã]o foi poss[ií]vel|critical|cr[ií]tico|0x[0-9a-f]{4,8}|event id|unreachable|refused|disconnected|terminated|invalid|missing|not found)", re.I)
+WEAK = re.compile(r"(finished with (err|warn)|completed with (err|warn)|warning|aviso)", re.I)
+NEGATED = re.compile(r"\b(no|zero|0|sem|nenhum)\s+(corrupt\w*|errors?|erros?|failures?|warnings?)\b|detected no |success", re.I)
+
+
+def problem_lines(text, limit=8):
+    """The lines of an on-screen text that name an error: causes first (in screen order), then the summaries that only say it finished with errors.
+    Lines that say everything is fine ("no corrupted blocks") are left out."""
+    seen, strong, weak = set(), [], []
     for line in text.splitlines():
         line = line.strip()
-        if len(line) > 14 and PROBLEM.search(line) and line.lower() not in seen:
+        if len(line) < 15 or line.lower() in seen or NEGATED.search(line):
+            continue
+        if STRONG.search(line):
             seen.add(line.lower())
-            out.append(line)
-            if len(out) >= limit:
-                break
-    return out
+            strong.append(line)
+        elif WEAK.search(line):
+            seen.add(line.lower())
+            weak.append(line)
+    return (strong + weak)[:limit]
+
 
 def selected_row_crop(image_path, max_width=820, scale=3):
     """A magnified picture of the highlighted (selected) row of a list on screen (its first `max_width` pixels, enlarged `scale` times), saved as a
@@ -592,7 +642,7 @@ def selected_row_crop(image_path, max_width=820, scale=3):
         bands = [bd for bd in bands if 8 <= bd[1] - bd[0] + 1 <= 70]
         if not bands:
             return None
-        top, bottom = max(bands, key=lambda bd: bd[1] - bd[0])
+        top, bottom = min(bands)   # the highest highlighted row: the selected job/item of the list (a log line selected further down is not what the job is called)
         cols = np.where(mask[top:bottom + 1].mean(axis=0) > 0.5)[0]
         left = int(cols[0]) if len(cols) else 0
         crop = im.crop((left, max(0, top - 3), min(im.width, left + max_width), min(im.height, bottom + 4)))

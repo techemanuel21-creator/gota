@@ -831,6 +831,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                       "Quando a tela mostrar erro, falha, aviso ou algo anormal, SEMPRE explique como especialista: 1) o que está acontecendo, citando o texto exato da tela; "
                       "2) a causa provável; 3) como corrigir, em passos e com comandos quando houver; 4) o que verificar se não resolver. Use o MATERIAL DA BASE quando ajudar. "
                       "Nunca invente o que não está na tela; se algo não estiver legível, diga. Português do Brasil, chamando-o de \"{sir}\". "
+                      "VÁRIOS ERROS: quando houver mais de uma linha de erro, analise todas em conjunto e dê UMA análise da causa raiz do problema (a causa costuma estar na primeira linha de erro específica; \"finished with errors\" e \"skipping\" são consequências) e a correção; não repita nem liste as linhas da tela. "
                       "NOMES: copie nomes de jobs, servidores e mensagens EXATAMENTE como aparecem no texto lido (principalmente na LINHA SELECIONADA); se não conseguir ler o nome com certeza, diga \"o job selecionado\" e NUNCA invente um nome. A causa deve vir das linhas de erro da tela (ex.: Error: ...), não de suposição pelo status. "
                       "SEJA BREVE: responda em até 4 frases curtas (comece citando o nome do job ou item selecionado e o texto exato do erro, a causa provável e a ação principal para corrigir) e termine perguntando "
                       "se ele quer os passos detalhados. Só detalhe passos, comandos e verificações se ele pedir. Comandos (quando pedidos) em blocos ```.")
@@ -856,7 +857,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         full = tmp / "gota_screen_full.png"
         shot.convert("RGB").save(full)
         self.on_status("Lendo o texto da tela...")
-        seen = tools.ocr_image(full, 2 if shot.width <= 2600 else 1)[:2800]
+        seen = tools.ocr_tiles(full, scale=3 if shot.width <= 2000 else 2)[:7000]   # the whole screen in magnified tiles read at the same time: log panels and lists come out
         small = shot.copy()
         small.thumbnail((2200, 1300) if big else (1280, 1280))
         path = tmp / "gota_screen.jpg"
@@ -877,12 +878,12 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
             self.on_status("Procurando a mensagem de erro...")
             try:
                 quote = llm.one_shot("Você lê telas de sistemas de TI. Responda apenas com o texto exato.",
-                                     "Copie literalmente a mensagem de erro, falha ou aviso mais importante visível nesta imagem (nome do job/serviço e frase do erro). "
+                                     "Copie literalmente TODAS as linhas de erro ou falha visíveis nesta imagem (as marcadas em vermelho ou com palavras como Error, Failed, Exception), uma por linha, na ordem em que aparecem. "
                                      "Se não houver nenhuma, responda: nenhuma.", str(path))
-                quote = (quote or "").strip().splitlines()[0][:200] if (quote or "").strip() else ""
-                if quote and tools.norm(quote).strip(" .") not in ("nenhuma", "nenhum"):
-                    problems = [quote]
-                    seen = f"{seen}\n{quote}"
+                lines = [l.strip(" -•")[:200] for l in (quote or "").splitlines() if l.strip()][:8]
+                if lines and tools.norm(lines[0]).strip(" .") not in ("nenhuma", "nenhum"):
+                    problems = lines
+                    seen = f"{seen}\n" + "\n".join(lines)
             except Exception:
                 pass
         probe = f"{question} {' '.join(problems)} {seen}"[:1400]
@@ -905,6 +906,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
             recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {t[:300]}" for r, t in list(history)[-4:] if t.strip())
             ask = ((f"Conversa até agora:\n{recent}\n\n" if recent else "") + f"O usuário disse: {question or 'Descreva e analise o que está na tela.'}\n"
                    + (f"\nLINHA SELECIONADA NA TELA (lida ampliada: o nome do job/item está aqui): {row}\n" if row else "")
+                   + ("\nLINHAS DE ERRO LIDAS NA TELA (analise TODAS em conjunto; as que dizem só \"finished with errors\" são consequência):\n" + "\n".join(f"- {l}" for l in problems) + "\n" if len(problems) > 1 else "")
                    + (f"\nTEXTO LIDO DA TELA (OCR):\n{seen}\n" if seen else "") + (f"\nMATERIAL DA BASE:\n{material[:2400]}\n" if material else "")
                    + "\nEntenda o que ele quer saber a partir da frase dele e responda.")
             out = llm.one_shot(system, ask, str(path), on_delta=self.stream_to_ui())
