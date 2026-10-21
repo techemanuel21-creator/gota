@@ -35,6 +35,46 @@ def ensure_piper_voice():
         return None
 
 
+_EN_WORDS = set("the and is are was were to of in that it for with on this you be at by from has have had been not but or an will would could should can may if then than "
+                "when while which who what where how all any some your our their its his her they we please there here these those into about after before over under "
+                "between because during without within also only just very more most such other another each every both few many much own same".split())
+_PT_WORDS = set("o a os as um uma uns umas de da do das dos em no na nos nas para por com sem que e é são não se mas ou ao à aos quando como mais muito já foi era ser "
+                "está estão tem têm vai vou meu minha seu sua isso isto esse essa este esta aqui lá mesmo também então senhor senhora erro falha causa servidor tela "
+                "ele ela eles elas eu você vocês nós me te lhe nem pois porque sobre entre até depois antes ainda sempre nunca só sim ter fazer pode podem deve".split())
+
+
+def split_languages(text):
+    """[(lang, text)] with lang 'en' for runs of English (three or more words with English function words and no Portuguese ones, e.g. an error
+    message quoted from the screen) and 'pt' for everything else, so each part is read with the voice that pronounces it right."""
+    import re
+    tokens = re.findall(r"\s+|[^\s]+", text)
+    chunks, cur = [], []          # chunks of consecutive tokens that are not Portuguese markers
+    for tok in tokens:
+        word = re.sub(r"[^\wÀ-ÿ']", "", tok).lower()
+        pt = bool(re.search(r"[À-ÿ]", tok)) or word in _PT_WORDS
+        if tok.isspace():
+            cur.append((tok, None))
+        elif pt:
+            chunks.append(("pt", cur)); cur = []
+            chunks.append(("pt", [(tok, word)]))
+        else:
+            cur.append((tok, word))
+    chunks.append(("pt", cur))
+    out = []
+    for kind, toks in chunks:
+        if not toks:
+            continue
+        words = [w for _t, w in toks if w]
+        hits = sum(1 for w in words if w in _EN_WORDS)
+        lang = "en" if kind == "pt" and len(words) >= 3 and hits >= 1 and hits * 4 >= len(words) - 1 and all(w.isascii() for w in words) else "pt"
+        piece = "".join(t for t, _w in toks)
+        if out and out[-1][0] == lang:
+            out[-1] = (lang, out[-1][1] + piece)
+        else:
+            out.append((lang, piece))
+    return [(l, s) for l, s in out if s.strip()]
+
+
 class Speaker:
     """A classic butler's voice: male Piper voice, unhurried. Falls back to Windows' own voice if Piper is unavailable."""
 
@@ -66,6 +106,21 @@ class Speaker:
         engine.setProperty("rate", 150)
         return engine
 
+    def _render(self, piper, text, np):
+        """The audio for `text` in the SAME voice: English phrases are phonemized as English (espeak en-us) and spoken by the Portuguese voice, whose
+        phoneme set covers them, so they come out as an English-sounding butler instead of Portuguese-style reading of English words."""
+        parts = []
+        for lang, piece in split_languages(text):
+            old = piper.config.espeak_voice
+            if lang == "en":
+                piper.config.espeak_voice = "en-us"
+            try:
+                raw = b"".join(c.audio_int16_bytes for c in piper.synthesize(piece, syn_config=self.cfg))
+            finally:
+                piper.config.espeak_voice = old
+            parts.append(np.frombuffer(raw, dtype=np.int16))
+        return np.concatenate(parts) if parts else np.zeros(1, dtype=np.int16)
+
     def _run(self):
         import numpy as np, sounddevice as sd
         piper = self._load_piper()
@@ -78,9 +133,9 @@ class Speaker:
                 if gen != self.generation or not text:   # an empty line only marks 'everything before me has been played'
                     continue
                 if piper:
-                    audio = b"".join(c.audio_int16_bytes for c in piper.synthesize(text, syn_config=self.cfg))
+                    audio = self._render(piper, text, np)
                     if gen == self.generation:
-                        sd.play(np.frombuffer(audio, dtype=np.int16), piper.config.sample_rate)
+                        sd.play(audio, piper.config.sample_rate)
                         while sd.get_stream().active and gen == self.generation:
                             time.sleep(0.05)
                         sd.stop()

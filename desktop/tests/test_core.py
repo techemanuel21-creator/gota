@@ -367,6 +367,20 @@ class TestCloud(unittest.TestCase):
         self.assertIn("fora do ar", h.last_error)
         self.assertGreater(h.down_until, 0)
 
+class TestVoiceLanguages(unittest.TestCase):
+    def test_split_languages(self):
+        from gota import voice
+        parts = voice.split_languages("Senhor, a tela diz: Job has been terminated Error: Job aborted due to server termination. Isso significa que o serviço parou.")
+        langs = [l for l, _ in parts]
+        self.assertIn("en", langs)
+        en = " ".join(s for l, s in parts if l == "en")
+        self.assertIn("Job has been terminated", en)
+        self.assertNotIn("serviço", en)
+
+    def test_portuguese_stays_portuguese(self):
+        from gota import voice
+        self.assertEqual([l for l, _ in voice.split_languages("O backup do servidor Veeam falhou na tela dois.")], ["pt"])
+
 if __name__ == "__main__":
     unittest.main()
 
