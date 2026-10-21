@@ -333,6 +333,8 @@ class ChatInput(tk.Canvas):
         self.text.bind("<Return>", lambda e: (on_enter(), "break")[1])
         self.text.bind("<Shift-Return>", lambda e: None)
         self.text.bind("<KeyRelease>", lambda e: self._grow())
+        self.text.bind("<Key>", self._key, add="+")   # typing while the hint is still showing (focus did not change): the hint goes first
+        self.text.bind("<<Paste>>", lambda e: self._hint(False), add="+")
         self.text.bind("<FocusIn>", lambda e: self._hint(False))
         self.text.bind("<FocusOut>", lambda e: self._hint(True))
         self._hint(True)
@@ -347,6 +349,10 @@ class ChatInput(tk.Canvas):
             self.hint_on = False
             self.text.delete("1.0", "end")
             self.text.configure(fg=TEXT)
+
+    def _key(self, e):
+        if self.hint_on and e.keysym not in ("Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R", "Caps_Lock", "Tab", "Left", "Right", "Up", "Down", "Escape", "Return"):
+            self._hint(False)
 
     def _grow(self):
         self.text.configure(height=min(6, int(self.text.index("end-1c").split(".")[0])))
@@ -373,7 +379,16 @@ class ChatInput(tk.Canvas):
             x -= 40
 
     def get(self):
-        return "" if self.hint_on else self.text.get("1.0", "end").strip()
+        content = self.text.get("1.0", "end").strip()
+        if self.hint_on:
+            if content.startswith(self.hint) and len(content) > len(self.hint):   # text was typed after the hint without it being cleared
+                self.hint_on = False
+                self.text.configure(fg=TEXT)
+                self.text.delete("1.0", "end")
+                self.text.insert("1.0", content[len(self.hint):].strip())
+                return content[len(self.hint):].strip()
+            return ""
+        return content
 
     def set(self, value):
         self.hint_on = False
