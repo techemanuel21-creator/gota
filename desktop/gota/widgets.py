@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageTk
 
 # Gota's identity: deep navy, a little darker and softer than before, with a violet accent
+CARD_BORDER = "#1B2146"
 BG, BAR, SURFACE, SURFACE2, HOVER, BORDER = "#0B0E1F", "#080A17", "#0F1328", "#171C38", "#232A52", "#2B3263"
 PRIMARY, PRIMARY_HOVER, ACCENT = "#6F63F2", "#8579F5", "#38BDF8"
 TEXT, MUTED = "#E8EAF6", "#8F96C0"
@@ -348,6 +349,68 @@ def _prose(parent, text, font, bg, width_px, root):
     return t
 
 
+# ---------------------------------------------------------------- syntax highlighting (pygments, plus a small lexer for Cisco IOS configs)
+SYNTAX = {"keyword": "#9AA5FF", "builtin": "#59C3FF", "string": "#7EE0A8", "number": "#FFB86B", "comment": "#6F78A8", "variable": "#FF9AC1", "op": "#C4C9F0"}
+_LANG_ALIAS = {"ps": "powershell", "ps1": "powershell", "pwsh": "powershell", "sh": "bash", "shell": "bash", "zsh": "bash", "cmd": "dosbatch", "bat": "dosbatch",
+               "js": "javascript", "ts": "typescript", "yml": "yaml", "py": "python", "html": "html", "xml": "xml", "conf": "ini", "cfg": "ini", "tf": "terraform"}
+_IOS_NAMES = {"cisco", "ios", "iosxe", "ios-xe", "cisco-ios", "switch", "router", "network", "config"}
+_IOS_KEYWORDS = ("configure terminal|conf t|end|exit|interface|range|vlan|name|description|switchport|mode|access|trunk|voice|native|allowed|encapsulation|dot1q|spanning-tree|portfast|"
+                 "bpduguard|channel-group|shutdown|default|no|ip|address|route|helper-address|dhcp|snooping|router|ospf|bgp|eigrp|network|area|access-list|access-group|permit|deny|"
+                 "hostname|enable|secret|username|privilege|line|vty|login|local|transport|input|ssh|telnet|crypto|key|generate|rsa|modulus|logging|ntp|server|snmp-server|banner|"
+                 "service|password-encryption|write|memory|copy|running-config|startup-config|show|do|speed|duplex|auto|power|inline|storm-control|port-security|maximum|violation|"
+                 "mac-address|sticky|standby|priority|preempt|vrrp|domain-name|nat|inside|outside|overload|source|list|pool|netmask|exec-timeout|logging|synchronous")
+_IOS_LINE = re.compile(
+    r"(?P<comment>^\s*!.*$)|(?P<iface>\b(?:Gigabit|TenGigabit|FastEthernet|Ethernet|Port-channel|Loopback|Vlan|Tunnel|Gi|Te|Fa|Eth|Po|Lo)(?:[A-Za-z]*)\d+(?:/\d+)*(?:\s*-\s*\d+)?)"
+    r"|(?P<number>\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d+)?\b|\b\d+(?:[-,]\d+)*\b)|(?P<keyword>\b(?:" + _IOS_KEYWORDS + r")\b)", re.M | re.I)
+
+
+def _ios_tokens(code):
+    """Cisco IOS configuration: comments (!), commands, interface names, numbers/IPs, and the free text after 'description'."""
+    for line in code.split("\n"):
+        m = re.match(r"^(\s*description\s+)(.*)$", line, re.I)
+        head, tail = (m.group(1), m.group(2)) if m else (line, "")
+        pos = 0
+        for g in _IOS_LINE.finditer(head):
+            if g.start() > pos:
+                yield None, head[pos:g.start()]
+            yield g.lastgroup, g.group(0)
+            pos = g.end()
+        if pos < len(head):
+            yield None, head[pos:]
+        if tail:
+            yield "string", tail
+        yield None, "\n"
+
+
+def _pygments_tokens(lang, code):
+    from pygments import lex
+    from pygments.lexers import get_lexer_by_name
+    from pygments.token import Token
+    lexer = get_lexer_by_name(_LANG_ALIAS.get(lang, lang), stripnl=False)
+    for tok, val in lex(code, lexer):
+        s = str(tok)
+        tag = ("comment" if tok in Token.Comment else "keyword" if tok in Token.Keyword else "string" if tok in Token.Literal.String else "number" if tok in Token.Literal.Number
+               else "variable" if tok in Token.Name.Variable else "builtin" if (tok in Token.Name.Builtin or tok in Token.Name.Function or tok in Token.Name.Class or tok in Token.Name.Tag
+                                                                                  or tok in Token.Name.Decorator or tok in Token.Name.Attribute) else "op" if tok in Token.Operator else None)
+        yield tag, val
+
+
+def insert_highlighted(t, lang, code):
+    """Fills the read-only-to-be Text `t` with `code`, coloured by language; any failure falls back to plain text."""
+    for name, colour in SYNTAX.items():
+        t.tag_configure("syn_" + name, foreground=colour, **({"font": ("Consolas", 10, "italic")} if name == "comment" else {}))
+    lang = (lang or "").lower().strip()
+    try:
+        tokens = list(_ios_tokens(code))[:-1] if lang in _IOS_NAMES else list(_pygments_tokens(lang, code)) if lang else None
+    except Exception:
+        tokens = None
+    if not tokens:
+        t.insert("1.0", code)
+        return
+    for tag, val in tokens:
+        t.insert("end", val, ("syn_" + tag,) if tag else ())
+
+
 def _code_block(parent, lang, code, root, width_px):
     box = tk.Frame(parent, bg=CODE_BG, highlightthickness=1, highlightbackground=HOVER, bd=0)
     bar = tk.Frame(box, bg=CODE_BAR)
@@ -370,7 +433,7 @@ def _code_block(parent, lang, code, root, width_px):
     chars = max(10, inner // max(1, f.measure("0")))
     t = tk.Text(box, width=chars, height=_est_lines(code, f, inner), wrap="word", bg=CODE_BG, fg="#E7E9FF", font=mono, relief="flat", bd=0, highlightthickness=0,
                 padx=10, pady=8, cursor="xterm", selectbackground=ACCENT, selectforeground="#0B0E1F", inactiveselectbackground=HOVER, insertwidth=0, takefocus=0)
-    t.insert("1.0", code)
+    insert_highlighted(t, lang, code)
     _selectable(t, root)
     t.bind("<Configure>", lambda e: _fit_height(t))
     t.pack(fill="x")
@@ -427,21 +490,25 @@ class ChatInput(tk.Canvas):
     def _layout(self):
         w = self.winfo_width()
         lines = int(self.text["height"])
-        h = 16 + lines * 22 + 14 + 40
+        inline = lines == 1   # one line: attach, text and mic/send share a single thin row; more lines: the buttons drop to a row below the text
+        left_w, right_w = 40 * len(self.left_names), 40 * len(self.right_names)
+        h = 50 if inline else 16 + lines * 22 + 8 + 38
         self.configure(height=h)
         if self.shape:
             self.delete(self.shape)
-        self.shape = rounded(self, 1, 1, w - 1, h - 1, 22, fill=self.fill, outline=BORDER)
+        self.shape = rounded(self, 1, 1, w - 1, h - 1, 26, fill=self.fill, outline=BORDER)
         self.tag_lower(self.shape)
-        self.coords(self.win, 20, 16)
-        self.itemconfigure(self.win, width=max(50, w - 40))
+        x0 = 20 + (left_w if inline else 0)
+        self.coords(self.win, x0, 14 if inline else 14)
+        self.itemconfigure(self.win, width=max(50, w - x0 - (right_w + 14 if inline else 20)))
+        y = h / 2 if inline else h - 24
         x = 26
         for n in self.left_names:
-            self.coords(self.btn_win[n], x, h - 26)
+            self.coords(self.btn_win[n], x, y)
             x += 40
         x = w - 26
         for n in reversed(self.right_names):
-            self.coords(self.btn_win[n], x, h - 26)
+            self.coords(self.btn_win[n], x, y)
             x -= 40
 
     def get(self):
@@ -474,10 +541,10 @@ class ChatInput(tk.Canvas):
 
 
 def bubble(parent, text, mine, maxw=560):
-    """A chat bubble: rounded, sized to its content; the text is selectable and ``` blocks become separate code boxes with a Copy button."""
-    plain = not mine
-    pad_x, pad_y, r = (2, 4, 0) if plain else (16, 11, 18)
-    bg = BG if plain else SURFACE2
+    """A chat card: rounded, sized to its content; the text is selectable and ``` blocks become separate code boxes with a Copy button."""
+    plain = False   # both sides are cards now: the user's a little brighter, the assistant's a subtle one with a thin border
+    pad_x, pad_y, r = (16, 12, 18)
+    bg = SURFACE2 if mine else SURFACE
     root = parent.winfo_toplevel()
     c = tk.Canvas(parent, bg=BG, highlightthickness=0, bd=0)
     frame = tk.Frame(c, bg=bg)
@@ -503,9 +570,8 @@ def bubble(parent, text, mine, maxw=560):
         c.configure(width=w, height=h)
         if state["shape"]:
             c.delete(state["shape"])
-        if not plain:
-            state["shape"] = rounded(c, 0, 0, w, h, r, fill=bg, outline="")
-            c.tag_lower(state["shape"])
+        state["shape"] = rounded(c, 0, 0, w - 1, h - 1, r, fill=bg, outline="" if mine else CARD_BORDER)
+        c.tag_lower(state["shape"])
     frame.bind("<Configure>", layout)
     layout()
     return c

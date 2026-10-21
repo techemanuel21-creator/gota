@@ -159,8 +159,11 @@ class App(tk.Tk):
         row = getattr(self, "_live_row", None)
         if row is None or not row.winfo_exists():
             row = self._live_row = tk.Frame(self.msgs, bg=BG)
-            row.pack(fill="x", padx=28, pady=5)
-            self._live_label = tk.Label(row, text="", bg=BG, fg=TEXT, font=FONT, justify="left", anchor="w", wraplength=self.maxw(True), padx=2, pady=4)
+            row.pack(fill="x", padx=44, pady=6)
+            tk.Label(row, image=sprites().frame("logo", 30, BG), bg=BG, bd=0).pack(side="left", anchor="n", padx=(0, 10), pady=(4, 0))
+            card = tk.Frame(row, bg=SURFACE, highlightbackground=widgets_mod.CARD_BORDER, highlightthickness=1, bd=0)
+            card.pack(side="left")
+            self._live_label = tk.Label(card, text="", bg=SURFACE, fg=TEXT, font=FONT, justify="left", anchor="w", wraplength=self.maxw(True) - 40, padx=14, pady=10)
             self._live_label.pack(side="left")
             thinking = getattr(self, "thinking", None)
             if thinking is not None and thinking.winfo_exists():
@@ -705,7 +708,7 @@ class App(tk.Tk):
     # ------------------------------------------------------------------ the chat screen
     def show_chat(self):
         self.clear()
-        self.sidebar = tk.Frame(self.body, bg=SURFACE, width=268)
+        self.sidebar = tk.Frame(self.body, bg=SURFACE, width=236)
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
         main = tk.Frame(self.body, bg=BG)
@@ -807,7 +810,7 @@ class App(tk.Tk):
 
     def maxw(self, plain=False):
         width = self.scroll.winfo_width() or 700
-        return int(max(320, min(780, width * 0.92))) if plain else int(max(320, min(620, width * 0.7)))
+        return int(max(320, min(760, width * 0.86 - 40))) if plain else int(max(320, min(620, width * 0.7)))
 
     def build_sidebar(self):
         for w in self.sidebar.winfo_children():
@@ -819,7 +822,7 @@ class App(tk.Tk):
         # no list of chats or projects here: four big buttons open them (and create new ones)
         for text, cmd, hot in (("＋   Nova conversa", self.new_chat, True), ("＋   Novo projeto", self.create_project_dialog, True),
                                ("☰   Selecionar conversa", self.chats_dialog, False), ("📁   Selecionar projeto", self.projects_dialog, False)):
-            row = tk.Label(self.sidebar, text=text, bg=SURFACE, fg=PRIMARY if hot else TEXT, anchor="w", font=("Segoe UI", 11, "bold" if hot else "normal"), padx=14, pady=6, cursor="hand2")
+            row = tk.Label(self.sidebar, text=text, bg=SURFACE, fg=PRIMARY if hot else TEXT, anchor="w", font=("Segoe UI", 10, "bold" if hot else "normal"), padx=12, pady=5, cursor="hand2")
             row.pack(fill="x", padx=10, pady=0)
             row.bind("<Enter>", lambda e, w=row: w.configure(bg=SURFACE2))
             row.bind("<Leave>", lambda e, w=row: w.configure(bg=SURFACE))
@@ -839,13 +842,13 @@ class App(tk.Tk):
                                     ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial))),
                   ("Avançado", (("📜  Registro de ações", self.audit_dialog),)))
         for label, links in groups:   # a small muted label above each group, no boxes: just spacing
-            tk.Label(foot, text=label.upper(), bg=SURFACE, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w", padx=10).pack(fill="x", pady=(4, 0))
+            tk.Label(foot, text=label.upper(), bg=SURFACE, fg="#5D6492", font=("Segoe UI", 7, "bold"), anchor="w", padx=10).pack(fill="x", pady=(5, 0))
             for text, cmd in links:
                 self._link(foot, text, cmd, fg=MUTED, pad=1)
         self._poll_download()
 
     def _link(self, parent, text, cmd, fg=TEXT, pad=5):
-        row = tk.Label(parent, text=text, bg=SURFACE, fg=fg, anchor="w", font=("Segoe UI", 10), padx=10, pady=pad, cursor="hand2")
+        row = tk.Label(parent, text=text, bg=SURFACE, fg=fg, anchor="w", font=("Segoe UI", 9), padx=10, pady=pad, cursor="hand2")
         row.pack(fill="x")
         row.bind("<Enter>", lambda e: row.configure(bg=SURFACE2, fg=TEXT))
         row.bind("<Leave>", lambda e: row.configure(bg=SURFACE, fg=fg))
@@ -1361,12 +1364,14 @@ class App(tk.Tk):
                 lab.image = photo
                 lab.pack(side="right" if mine else "left")
                 lab.bind("<Button-1>", lambda e, p=image: os.startfile(p))
-                row.pack(fill="x", padx=28, pady=5)
+                row.pack(fill="x", padx=44, pady=6)
             except Exception:
                 pass
         if text.strip():
             row = tk.Frame(self.msgs, bg=BG)
-            row.pack(fill="x", padx=28, pady=5)
+            row.pack(fill="x", padx=44, pady=6)
+            if not mine:   # the assistant's avatar beside its answer
+                tk.Label(row, image=sprites().frame("logo", 30, BG), bg=BG, bd=0).pack(side="left", anchor="n", padx=(0, 10), pady=(4, 0))
             bubble(row, text, mine, self.maxw(plain=not mine)).pack(side="right" if mine else "left")
         if steps and not mine:
             self._steps_card(steps)
@@ -1429,7 +1434,7 @@ class App(tk.Tk):
         self.title_label.configure(text=self.chats.get(cid)["title"])
         self.build_sidebar()
         row = tk.Frame(self.msgs, bg=BG)
-        row.pack(fill="x", padx=28, pady=5)
+        row.pack(fill="x", padx=44, pady=6)
         pill = tk.Canvas(row, bg=BG, highlightthickness=0, bd=0, width=340, height=54)
         rounded(pill, 0, 0, 340, 54, 18, fill=SURFACE2, outline="")
         self.thinking_cat = CatView(pill, size=40, bg=SURFACE2)

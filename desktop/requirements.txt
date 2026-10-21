@@ -18,3 +18,4 @@ msal
 playwright
 praat-parselmouth
 python-pptx
+pygments

@@ -675,6 +675,41 @@ class McpTool(unittest.TestCase):
             a.close_mcp()
             s.set("mcp_servers", [])
 
+class ExtractJsonFences(unittest.TestCase):
+    def test_code_blocks_inside_text_are_kept(self):
+        raw = '{"action":"reply","text":"Segue:\\n\\n```cisco\\nconfigure terminal\\n```\\nFim"}'
+        self.assertEqual(brain.Brain.extract_json(raw)["text"], "Segue:\n\n```cisco\nconfigure terminal\n```\nFim")
+
+    def test_a_fence_around_the_json_is_still_removed(self):
+        self.assertEqual(brain.Brain.extract_json('```json\n{"action":"reply","text":"oi"}\n```')["text"], "oi")
+
+    def test_half_written_answer_keeps_its_fence(self):
+        d = brain.Brain.extract_json('{"action":"reply","text":"a\\n```ps\\nGet-X\\n```"')
+        self.assertIn("```ps", d["text"])
+
+class SyntaxHighlighting(unittest.TestCase):
+    def test_cisco_config_tokens(self):
+        from gota import widgets
+        toks = list(widgets._ios_tokens("interface GigabitEthernet1/0/41\n description Link02\n switchport access vlan 900\n! nota"))
+        kinds = {tag for tag, _ in toks if tag}
+        self.assertTrue({"keyword", "iface", "number", "string", "comment"} <= kinds)
+        self.assertIn(("string", "Link02"), toks)          # the free text after "description"
+
+    def test_powershell_and_unknown_languages(self):
+        import tkinter as tk
+        from gota import widgets
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            t = tk.Text(root)
+            widgets.insert_highlighted(t, "powershell", "Get-Process | Select Name")
+            self.assertTrue(t.tag_ranges("syn_builtin") or t.tag_ranges("syn_keyword"))
+            t2 = tk.Text(root)
+            widgets.insert_highlighted(t2, "linguagem-inexistente", "texto qualquer")
+            self.assertEqual(t2.get("1.0", "end-1c"), "texto qualquer")      # falls back to plain text
+        finally:
+            root.destroy()
+
 if __name__ == "__main__":
     unittest.main()
 

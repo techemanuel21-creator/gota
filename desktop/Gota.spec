@@ -1,7 +1,7 @@
 # PyInstaller recipe: build with  pyinstaller Gota.spec --noconfirm
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs, collect_submodules
 datas, binaries, hidden = [("gota/assets", "gota/assets"), ("gota/seed", "gota/seed"), ("gota/skills", "gota/skills"), ("vscode-extension", "vscode-extension")], [], ["pystray._win32", "pyttsx3.drivers", "pyttsx3.drivers.sapi5"]
-for pkg in ("litert_lm", "litert_lm_api", "piper", "vosk", "onnxruntime", "sounddevice", "_sounddevice_data", "pyttsx3", "faster_whisper", "ctranslate2", "tokenizers", "av", "pypdf", "openpyxl", "docx", "fpdf", "psutil", "playwright", "msal", "greenlet", "pyee", "msal_extensions", "parselmouth"):
+for pkg in ("litert_lm", "litert_lm_api", "piper", "vosk", "onnxruntime", "sounddevice", "_sounddevice_data", "pyttsx3", "faster_whisper", "ctranslate2", "tokenizers", "av", "pypdf", "openpyxl", "docx", "fpdf", "psutil", "playwright", "msal", "greenlet", "pyee", "msal_extensions", "parselmouth", "pygments", "pptx"):
     try:
         d, b, h = collect_all(pkg); datas += d; binaries += b; hidden += h
     except Exception:

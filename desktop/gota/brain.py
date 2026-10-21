@@ -973,7 +973,12 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
 
     @staticmethod
     def extract_json(raw):
-        s = raw.replace("```json", "").replace("```", "").strip()
+        s = raw.strip()
+        if s.startswith("```"):   # a ```json fence AROUND the JSON: drop only that one (fences inside "text" are the code blocks of the answer and must stay)
+            s = s.split("\n", 1)[1] if "\n" in s else ""
+            if s.rstrip().endswith("```"):
+                s = s.rstrip()[:-3]
+        s = s.strip()
         i = s.find("{")
         if i == -1:
             return None
