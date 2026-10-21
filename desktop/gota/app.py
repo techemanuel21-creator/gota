@@ -1,13 +1,13 @@
 """The Gota window: first-run setup, chats, voice, calls (as a pop-up), agent confirmations, knowledge base, tray icon."""
 import webbrowser
-import json, os, threading, time, tkinter as tk, uuid, winsound
+import json, os, re, threading, time, tkinter as tk, uuid, winsound
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
-from . import agent as agent_mod, cloud as cloud_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
+from . import routines as routines_mod, memory as memory_mod, agent as agent_mod, cloud as cloud_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
 from . import widgets as widgets_mod
 from .overlay import CatOverlay
 from .widgets import (ACCENT, BG, BORDER, COLORS, FONT, GREEN, GREEN_HOVER, HOVER, MUTED, PRIMARY, PRIMARY_HOVER, RED, SURFACE, SURFACE2, TEXT,
@@ -88,6 +88,8 @@ class App(tk.Tk):
         self.brain = brain_mod.Brain(self.profile, self.settings, lambda: self.gemma, self.images, self._status, self._notify)
         self.brain.confirm = self.confirm_sync
         self.brain.confirm_message = self.confirm_message_sync
+        self.brain.agent.approve_plan = self.approve_plan_sync          # "plan mode": the plan is shown and approved before the agent acts
+        self.brain.agent.on_plan_progress = lambda plan, done: self.ui(self._plan_card, plan, done)
         self.brain.hide_window = self.hide_for_capture
         self.chrome = chrome.Chrome(self, "Gota Local Assistant", sprites().frame("logo", 20, COLORS["bar"]), COLORS)
         self.overlay = CatOverlay(self)
@@ -243,6 +245,67 @@ class App(tk.Tk):
         self.ui(show)
         done.wait(180)
         return result["ok"]
+
+    def approve_plan_sync(self, goal, plan):
+        """Called from the agent's worker thread: shows the plan and waits for Executar / Cancelar."""
+        result, done = {"ok": False}, threading.Event()
+
+        def show():
+            d = Dialog(self, "Plano", 580, 200 + 30 * len(plan))
+            tk.Label(d.body, text="Este é o meu plano", bg=SURFACE, fg=PRIMARY_HOVER, font=("Segoe UI", 14, "bold")).pack(anchor="w")
+            tk.Label(d.body, text=goal[:160], bg=SURFACE, fg=MUTED, font=("Segoe UI", 10), wraplength=520, justify="left").pack(anchor="w", pady=(2, 8))
+            for i, step in enumerate(plan, 1):
+                tk.Label(d.body, text=f"{i}.  {step}", bg=SURFACE, fg=TEXT, font=FONT, wraplength=520, justify="left", anchor="w").pack(anchor="w", pady=2)
+            row = tk.Frame(d.body, bg=SURFACE)
+            row.pack(fill="x", side="bottom", pady=(14, 0))
+
+            def answer(ok):
+                result["ok"] = ok
+                d.destroy()
+                done.set()
+            RoundButton(row, "Cancelar", lambda: answer(False), parent_bg=SURFACE).pack(side="right", padx=(10, 0))
+            RoundButton(row, "Executar o plano", lambda: answer(True), bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="right")
+            d.protocol("WM_DELETE_WINDOW", lambda: answer(False))
+            d.lift()
+            self.bell()
+        self.ui(show)
+        done.wait(300)
+        return result["ok"]
+
+    def _plan_card(self, plan, done_count):
+        """A live to-do list under the conversation: the plan's steps with ☑ for the ones already done."""
+        try:
+            card = getattr(self, "_plan_frame", None)
+            if card is None or not card.winfo_exists() or getattr(self, "_plan_steps", None) != plan:
+                self._plan_clear()
+                self._plan_steps = list(plan)
+                row = tk.Frame(self.msgs, bg=BG)
+                row.pack(fill="x", padx=32, pady=(0, 6))
+                card = tk.Frame(row, bg=SURFACE, highlightbackground=BORDER, highlightthickness=1, bd=0)
+                card.pack(side="left", fill="x", expand=True)
+                tk.Label(card, text="Plano em andamento", bg=SURFACE, fg=MUTED, font=("Segoe UI", 9, "bold"), anchor="w", padx=14, pady=6).pack(fill="x")
+                self._plan_frame, self._plan_row, self._plan_labels = card, row, []
+                for step in plan:
+                    lab = tk.Label(card, text="", bg=SURFACE, fg=MUTED, font=("Segoe UI", 10), anchor="w", justify="left", padx=14, wraplength=self.maxw(True) - 40)
+                    lab.pack(fill="x", pady=1)
+                    self._plan_labels.append(lab)
+                tk.Frame(card, bg=SURFACE, height=6).pack()
+            for i, lab in enumerate(self._plan_labels):
+                done = i < done_count
+                lab.configure(text=f"{'☑' if done else '☐'}  {i + 1}. {plan[i]}", fg=GREEN if done else (TEXT if i == done_count else MUTED))
+            self.to_bottom((0, 80))
+        except Exception:
+            pass
+
+    def _plan_clear(self):
+        row = getattr(self, "_plan_row", None)
+        if row is not None:
+            try:
+                row.destroy()
+            except Exception:
+                pass
+        self._plan_row = self._plan_frame = None
+        self._plan_steps, self._plan_labels = None, []
 
     def confirm_message_sync(self, found, requested, message, extra=""):
         """WhatsApp: shows who it goes to and the text, which can be edited before sending. Returns (ok, edited text)."""
@@ -436,6 +499,112 @@ class App(tk.Tk):
         RoundButton(row, "Atualizar lista", refresh, parent_bg=SURFACE).pack(side="left", padx=8)
         status.pack(anchor="w", pady=(10, 0))
 
+    def memory_dialog(self):
+        """What Gota remembers about the user across conversations, the routines that run by themselves, and the agent's switches."""
+        d = Dialog(self, "Memória e rotinas", 640, 700)
+        mem, routines = self.brain.memory, self.brain.routines
+
+        def section(title, hint):
+            tk.Label(d.body, text=title, bg=SURFACE, fg=TEXT, font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(6, 0))
+            tk.Label(d.body, text=hint, bg=SURFACE, fg=MUTED, font=("Segoe UI", 9), wraplength=580, justify="left").pack(anchor="w", pady=(0, 4))
+
+        def listbox(height):
+            lb = tk.Listbox(d.body, bg=SURFACE2, fg=TEXT, selectbackground=PRIMARY, relief="flat", font=("Segoe UI", 10), activestyle="none", bd=0, highlightthickness=0, height=height)
+            lb.pack(fill="x")
+            return lb
+
+        # ---- memory
+        section("Memória", "O que o Gota aprendeu sobre você e como você gosta das coisas. Ele guarda sozinho o que você conta; aqui você corrige ou apaga.")
+        mlb = listbox(8)
+        shown = []
+
+        def refresh_mem():
+            mlb.delete(0, "end")
+            shown[:] = sorted(mem.items(), key=lambda i: (memory_mod.TYPES.index(i["type"]), -i["updated"]))
+            for it in shown:
+                mlb.insert("end", f"  [{memory_mod.LABELS[it['type']]}]  {it['text'][:70]}")
+
+        def add_mem():
+            text = simpledialog.askstring("Memória", "O que devo lembrar?", parent=d)
+            if text:
+                mem.add(memory_mod.Memory.guess(text) if hasattr(memory_mod.Memory, "guess") else "user", text)
+                refresh_mem()
+
+        def edit_mem():
+            sel = mlb.curselection()
+            if sel:
+                it = shown[sel[0]]
+                text = simpledialog.askstring("Memória", "Corrija:", initialvalue=it["text"], parent=d)
+                if text:
+                    mem.update(it["id"], text)
+                    refresh_mem()
+
+        def del_mem():
+            sel = mlb.curselection()
+            if sel:
+                mem.delete(shown[sel[0]]["id"])
+                refresh_mem()
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(6, 0))
+        RoundButton(row, "Adicionar", add_mem, parent_bg=SURFACE, height=30).pack(side="left")
+        RoundButton(row, "Editar", edit_mem, parent_bg=SURFACE, height=30).pack(side="left", padx=6)
+        RoundButton(row, "Apagar", del_mem, bg=RED, hover="#F0686C", parent_bg=SURFACE, height=30).pack(side="right")
+        refresh_mem()
+
+        # ---- routines
+        section("Rotinas", "Tarefas que o Gota faz sozinho em um horário, só com consultas (nada é alterado), e avisa o resultado. Ex.: conferir os backups toda manhã.")
+        rlb = listbox(5)
+        rshown = []
+
+        def refresh_routines():
+            rlb.delete(0, "end")
+            rshown[:] = routines.items() if routines else []
+            for r in rshown:
+                rlb.insert("end", f"  #{r['id']}  {r['name'][:30]}  ·  {r['repeat']} às {r['when']}")
+
+        def add_routine():
+            if not routines:
+                return
+            goal = simpledialog.askstring("Rotina", "O que o Gota deve fazer?", parent=d)
+            when = goal and simpledialog.askstring("Rotina", "Que horas? (HH:MM)", initialvalue="08:00", parent=d)
+            if goal and when and re.match(r"^\d{1,2}:\d{2}$", when):
+                repeat = simpledialog.askstring("Rotina", "Repetir: daily, weekdays, weekly ou hourly", initialvalue="daily", parent=d) or "daily"
+                routines.add(goal[:40], goal, when, repeat.strip().lower())
+                refresh_routines()
+
+        def run_now():
+            sel = rlb.curselection()
+            if sel and routines:
+                routines.fire(rshown[sel[0]])
+                self.toast("Rotina", "Rodando agora…")
+
+        def del_routine():
+            sel = rlb.curselection()
+            if sel and routines:
+                routines.delete(rshown[sel[0]]["id"])
+                refresh_routines()
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(6, 0))
+        RoundButton(row, "Nova rotina", add_routine, parent_bg=SURFACE, height=30).pack(side="left")
+        RoundButton(row, "Rodar agora", run_now, parent_bg=SURFACE, height=30).pack(side="left", padx=6)
+        RoundButton(row, "Apagar", del_routine, bg=RED, hover="#F0686C", parent_bg=SURFACE, height=30).pack(side="right")
+        refresh_routines()
+
+        # ---- agent switches
+        section("Agente", "Como o Gota trabalha nas tarefas de vários passos.")
+        for key, label, default in (("plan_approval", "Mostrar o plano e pedir aprovação antes de agir", True), ("agent_verify", "Conferir a resposta final com o que as ferramentas mostraram", True)):
+            r = tk.Frame(d.body, bg=SURFACE)
+            r.pack(fill="x", pady=2)
+            tk.Label(r, text=label, bg=SURFACE, fg=TEXT, font=("Segoe UI", 10)).pack(side="left")
+            Toggle(r, self.settings.get(key) is not False if default else bool(self.settings.get(key)), lambda v, k=key: self.settings.set(k, bool(v))).pack(side="right")
+        r = tk.Frame(d.body, bg=SURFACE)
+        r.pack(fill="x", pady=(6, 0))
+        tk.Label(r, text="Tópico ntfy para avisos no celular (opcional):", bg=SURFACE, fg=TEXT, font=("Segoe UI", 10)).pack(side="left")
+        topic = tk.Entry(r, bg=SURFACE2, fg=TEXT, insertbackground=TEXT, relief="flat", font=FONT, width=18)
+        topic.insert(0, self.settings.get("ntfy_topic") or "")
+        topic.pack(side="right", ipady=4)
+        topic.bind("<FocusOut>", lambda e: self.settings.set("ntfy_topic", topic.get().strip()))
+
     def cloud_dialog(self):
         """Settings for the online brain: key, on/off, and a test."""
         d = Dialog(self, "Nuvem (OpenRouter)", 560, 430)
@@ -526,6 +695,8 @@ class App(tk.Tk):
             try:
                 self.gemma = cloud_mod.Hybrid(llm.Gemma(path), self.settings)   # online: OpenRouter; offline (or on failure): Gemma
                 threading.Thread(target=self.get_speaker, daemon=True).start()   # load the voice now (it takes a few seconds)
+                self.brain.toast = self.toast
+                self.brain.routines = routines_mod.Routines(self.settings, lambda goal, done: self.brain.agent.run_background(goal, done, unattended=True), self.toast)
                 self.ui(self.show_boot)
             except Exception as e:
                 self.ui(lambda: messagebox.showerror("Gota", f"Não consegui carregar o modelo:\n{e}", parent=self))
@@ -663,14 +834,14 @@ class App(tk.Tk):
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 1), anchor="w", pady=0)   # grows only while something downloads
         self.dl_label.pack(fill="x", padx=8)
         groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
-                  ("Conhecimento", (("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog))),
+                  ("Conhecimento", (("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🧠  Memória e rotinas", self.memory_dialog))),
                   ("Preferências", (("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("🎤  Voz e microfone", self.mic_dialog),
                                     ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial))),
                   ("Avançado", (("📜  Registro de ações", self.audit_dialog),)))
         for label, links in groups:   # a small muted label above each group, no boxes: just spacing
-            tk.Label(foot, text=label.upper(), bg=SURFACE, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w", padx=10).pack(fill="x", pady=(6, 0))
+            tk.Label(foot, text=label.upper(), bg=SURFACE, fg=MUTED, font=("Segoe UI", 8, "bold"), anchor="w", padx=10).pack(fill="x", pady=(4, 0))
             for text, cmd in links:
-                self._link(foot, text, cmd, fg=MUTED, pad=2)
+                self._link(foot, text, cmd, fg=MUTED, pad=1)
         self._poll_download()
 
     def _link(self, parent, text, cmd, fg=TEXT, pad=5):
@@ -1094,11 +1265,14 @@ class App(tk.Tk):
         def refresh(*_):
             lb.delete(0, "end")
             shown.clear()
+            found = {h["id"]: h["snippet"] for h in self.chats.search(q.get())} if q.get().strip() else {}
             for c in self.chats.list():
-                if not c.get("project") and tools.norm(q.get()) in tools.norm(c["title"]):   # coding chats live under Projects only
+                if c.get("project"):   # coding chats live under Projects only
+                    continue
+                if not q.get().strip() or tools.norm(q.get()) in tools.norm(c["title"]) or c["id"] in found:   # title or any message
                     shown.append(c)
                     when = datetime.fromtimestamp(c["updated"]).strftime("%d/%m %H:%M")
-                    lb.insert("end", f"  {c['title'][:44]}      ·  {len(c['messages'])} msg  ·  {when}")
+                    lb.insert("end", f"  {c['title'][:36]}   ·  {when}" + (f"   —  {found[c['id']][:46]}" if c["id"] in found else f"   ·  {len(c['messages'])} msg"))
         q.trace_add("write", refresh)
         refresh()
 
@@ -1292,6 +1466,7 @@ class App(tk.Tk):
                 self.typing = False
                 self.set_activity(None)
                 self._live_clear()
+                self._plan_clear()
                 self.files_refresh()
                 if self.thinking.winfo_exists():
                     self.thinking.destroy()
@@ -1584,6 +1759,19 @@ class App(tk.Tk):
         except Exception:
             pass
         os._exit(0)
+
+    def toast(self, title, text):
+        """A Windows notification (from the tray icon); when there is no tray icon, Gota's own bubble."""
+        def show():
+            try:
+                if self.tray:
+                    self.tray.notify(text[:250], title)
+                    return
+            except Exception:
+                pass
+            self.overlay.show(f"{title}: {text[:160]}", "anim_cat_talk")
+            self.overlay.hide_later(6000)
+        self.ui(show)
 
     def _notify(self, label):
         def show():

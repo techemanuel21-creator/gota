@@ -2,7 +2,7 @@
 import json, re, time
 from pathlib import Path
 from datetime import datetime
-from . import agent as agent_mod, kb, quick, skills as skills_mod, tools, outlook as outlook_mod, whatsapp as wa_mod
+from . import memory as memory_mod, agent as agent_mod, kb, quick, skills as skills_mod, tools, outlook as outlook_mod, whatsapp as wa_mod
 from .tools import norm
 
 WEEKDAYS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
@@ -145,6 +145,9 @@ class Brain:
         self.on_partial = None   # set by the window/voice for the length of one request: called with the answer as it is being written
         self.gen = 0  # raised by cancel(): work started under an older value must stop and hand back nothing
         self.outlook, self.whatsapp = outlook_mod.Outlook(settings), wa_mod.WhatsApp(settings)
+        self.memory = memory_mod.Memory()
+        self.memory.import_profile_facts(profile.d.get("facts", []))
+        self.routines = None   # set by the window once the model is loaded
         self.agent = agent_mod.Agent(self, lambda t, d: self.confirm(t, d), lambda s: self.on_status(s))
 
     # ------------------------------------------------------------------ prompts
@@ -205,6 +208,10 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         lower = norm(goal)
         sir = self.p.sir()
         if image is None:
+            try:   # what he says about himself, his taste and his environment is kept across conversations (no model call: no delay)
+                self.memory.capture(goal)
+            except Exception:
+                pass
             if is_retry(lower) and self.last_image_prompt:
                 return self.draw(self.last_image_prompt)
             quick = self.quick_answer(goal, lower)
@@ -237,6 +244,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         screens = tools.screens_note(self.screen_nicks())   # which screens exist and where the cursor is (empty with a single screen)
         extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, símbolos nem links; a pergunta veio de reconhecimento de voz e pode ter erros em nomes técnicos (Veeam, Hyper-V...): entenda pelo contexto" if spoken else "")
         user_text = f"[Agora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M}{where}{extra}]\n" + (goal or "O que você vê nesta imagem?")
+        mem = self.memory.block(goal)
+        if mem:
+            user_text += f"\n[Memória sobre o dono (use só se ajudar, sem repetir):\n{mem}]"
         turns = [(r, t if r == "user" else json.dumps({"action": "reply", "text": t}, ensure_ascii=False)) for r, t in history if t.strip()]
         try:
             # first pass without the slow "thinking" mode: it is enough to decide what to do (look at the screen, search, answer...)
@@ -264,6 +274,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         asked = bool(self.is_question(goal, lower))
         if data.get("remember") and not asked and re.search(r"\b(eu|meu|minha|meus|minhas|me chamo|moro|trabalho|gosto|prefiro|adoro|odeio|sou|tenho)\b", lower):
             self.p.remember(str(data["remember"]))
+            self.memory.add("user", str(data["remember"]))
         return self.act(data, goal, lower, image, asked)
 
     # ------------------------------------------------------------------ actions

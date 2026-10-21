@@ -4,11 +4,23 @@ import ast, csv, io, json, math, operator, os, re, shutil, sqlite3, subprocess, 
 from datetime import datetime
 from pathlib import Path
 from . import kb, tools
+from .ext_tools import ExtTools, EXT_TOOLS
 from .store import ROOT
 
 AUDIT = ROOT / "audit.log"
 NOFLASH = 0x08000000
 MAX_STEPS = 8
+SUB_ROLES = ("explorar", "verificar", "planejar", "revisar", "redigir")   # read-only sub-agents; several can run at the same time
+ROLE_TEXT = {
+    "explorar": "você explora: lê arquivos, logs, configuração e a web e devolve os achados objetivos (números, nomes, caminhos, trechos).",
+    "verificar": "você confere: compara uma afirmação ou resultado com a realidade (arquivos, saídas, fontes) e diz o que se sustenta e o que não.",
+    "planejar": "você planeja: estuda o contexto (só leitura) e devolve um plano curto, ordenado e executável, com riscos e o que verificar.",
+    "revisar": "você revisa: lê código, configuração ou texto e aponta erros reais, riscos e melhorias, por ordem de importância, com o trecho e a correção.",
+    "redigir": "você redige: escreve o texto, script ou configuração pedidos (sem gravar em arquivo) e devolve o resultado pronto para o agente principal usar.",
+}
+# tools that only read and do not depend on each other: when asked together in one step they run at the same time
+PARALLEL_SAFE = {"list_dir", "read_file", "search_files", "regex_search", "web_page", "web_search", "kb_search", "system_info", "network_info", "repo_map",
+                 "calculate", "skill", "read_document", "chat_search", "memory_search"}
 PROJECT_STEPS = 30   # a coding task needs many more steps than a question
 OBS_LIMIT = 2500
 READ_ONLY = re.compile(
@@ -42,7 +54,7 @@ TOOLS = {
     "network_info": '{"what":"adapters|ports|connections|ping|dns","target":"host"}  diagnóstico de rede local',
     "http_request": '{"method":"GET","url":"https://...","headers":{},"body":null}  chama uma API (REST/JSON)',
     "web_page": '{"url":"https://...","max_chars":4000}  lê o texto de uma página da internet (scraping)',
-    "web_search": '{"query":"..."}  pesquisa na internet, mais recente primeiro',
+    "web_search": '{"query":"...","mode":"rapida|profunda"}  pesquisa na internet; "profunda" lê as melhores páginas e traz os trechos com as fontes (use quando o resultado raso não bastar)',
     "kb_search": '{"query":"..."}  procura na sua base de conhecimento (TI, segurança, Windows, Linux, Veeam, o que você já aprendeu)',
     "skill": '{"name":"habilidade"}  carrega o procedimento passo a passo de uma habilidade (sem nome, lista as disponíveis)',
     "kb_learn": '{"topic":"..."}  pesquisa na internet, baixa o material e guarda na base de conhecimento',
@@ -64,9 +76,12 @@ TOOLS = {
     "git": '{"args":"status","repo":"pasta"}  comandos git (leitura direto; commit/push/merge pedem confirmação)',
     "run_tests": '{"command":"pytest -q","cwd":"pasta"}  roda testes e resume falhas',
     "repo_map": '{"path":"pasta do projeto","depth":3}  mapa de um projeto/pasta: estrutura, arquivos-chave e principais classes/funções',
-    "delegate": '{"role":"explorar|verificar","task":"o que investigar"}  entrega uma consulta a um sub-agente que SÓ lê (não altera nada) e devolve um resumo curto',
+    "delegate": '{"role":"explorar|verificar|planejar|revisar|redigir","task":"..."}  entrega a um sub-agente que SÓ lê (não altera nada) e devolve um resumo. Vários ao mesmo tempo: {"tasks":[{"role":"explorar","task":"..."},{"role":"revisar","task":"..."}]}',
     "final": '{"text":"resposta final ao usuário"}  termina a tarefa',
 }
+
+
+TOOLS.update(EXT_TOOLS)
 
 
 def audit(kind, data):
@@ -118,7 +133,7 @@ def safe_eval(expr):
     return ev(ast.parse(expr.replace("^", "**").replace(",", "."), mode="eval").body)
 
 
-class Agent:
+class Agent(ExtTools):
     def __init__(self, brain, confirm, on_status=lambda s: None):
         self.brain = brain
         self.confirm = confirm      # confirm(text, danger) -> bool, called from the worker thread
@@ -137,6 +152,7 @@ Você executa tarefas no computador usando ferramentas. Fale português do Brasi
 
 A cada passo responda com UM objeto JSON, sem mais nada:
 {{"thought":"até 10 palavras","action":"nome_da_ferramenta","args":{{...}}}}
+Se precisar de várias consultas independentes (ler 2 arquivos, pesquisar e ler uma página...), peça todas de uma vez para ganhar tempo, até 4 ferramentas de LEITURA: {{"thought":"...","actions":[{{"action":"read_file","args":{{...}}}},{{"action":"web_search","args":{{...}}}}]}}
 Escreva pouco: pensamento de no máximo 10 palavras e só os argumentos necessários (cada palavra escrita custa segundos).
 Quando a tarefa estiver pronta (ou impossível), use {{"action":"final","args":{{"text":"resposta final"}}}}.
 
@@ -168,11 +184,11 @@ Para mudar um arquivo que já existe PREFIRA edit_file com dois blocos (```antes
 5. Termine com final: o que foi feito, os arquivos tocados e como rodar.
 Em Python use unittest para os testes (python -m unittest; já vem com o Python). Nunca instale pacotes (pip install, npm install) sem o usuário pedir.
 Escreva código completo e funcional (sem "..." nem espaços reservados), no estilo que o projeto já usa. Para tarefas grandes, faça a primeira parte funcionando e diga o que falta.""" if role == "projeto" else "") + ("" if role in ("principal", "projeto") else f"""
-PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague, mova nem execute nada que mude o computador, e não delegue. Termine em poucos passos com final contendo os achados objetivos (números, nomes, caminhos, trechos).""")
+PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ consulta: não altere, apague, mova nem execute nada que mude o computador, e não delegue. Termine em poucos passos com final contendo o resultado objetivo.""")
 
     # ------------------------------------------------------------------ roles
     SUB_TOOLS = {"list_dir", "read_file", "search_files", "regex_search", "system_info", "processes", "network_info", "web_search", "web_page",
-                 "kb_search", "skill", "calculate", "screen_look", "repo_map", "run_command", "final"}
+                 "kb_search", "skill", "calculate", "screen_look", "repo_map", "run_command", "read_document", "chat_search", "memory_search", "final"}
 
     @property
     def role(self):
@@ -181,7 +197,7 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
     @property
     def restricted(self):
         """True for the read-only sub-agents (explorar, verificar)."""
-        return self.role in ("explorar", "verificar")
+        return self.role in SUB_ROLES
 
     @property
     def project(self):
@@ -215,12 +231,13 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
             os.chdir(previous_cwd)
             self._tl.project = None
 
-    def run_background(self, goal, on_done):
-        """Runs a task on its own thread while the user keeps talking; on_done(task) is called when it ends."""
+    def run_background(self, goal, on_done, unattended=False):
+        """Runs a task on its own thread while the user keeps talking; on_done(task) is called when it ends. Unattended (routines): read-only, never asks."""
         task = {"id": len(self.bg) + 1, "goal": goal, "status": "rodando", "result": "", "started": time.time(), "stop": False}
         self.bg.append(task)
 
         def work():
+            self._tl.unattended = unattended
             try:
                 task["result"] = self._loop(goal, cancelled=lambda: task["stop"], quiet=True)
                 task["status"] = "cancelada" if task["stop"] else "concluída"
@@ -265,7 +282,7 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
             if wrong in args and right not in args:
                 args[right] = args.pop(wrong)
         blocks = self._blocks(raw)
-        if action == "write_file" and not args.get("content") and blocks:
+        if action in ("write_file", "make_html") and not args.get("content") and blocks:
             args["content"] = blocks[0][1]
         elif action == "edit_file" and not (args.get("old") and "new" in args) and blocks:
             old = next((t for lab, t in blocks if lab in ("antes", "old", "before")), None)
@@ -314,7 +331,7 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
         if llm is None:
             return "Minha mente ainda está carregando."
         status = (lambda s: None) if quiet else self.on_status
-        sub = role in ("explorar", "verificar")
+        sub = role in SUB_ROLES
         previous = (getattr(self._tl, "role", "principal"), getattr(self._tl, "cancelled", None))
         self._tl.role, self._tl.cancelled = role, cancelled
         if not sub:
@@ -330,9 +347,16 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
             if suggested:   # a ready procedure for this kind of task: follow it instead of improvising
                 message += "\n\nHABILIDADE SUGERIDA (siga estes passos, usando as ferramentas para executar o que for possível):\n" + skills.prompt_block(suggested, 1200)
             plan = [] if sub else self._plan(goal)
+            if plan and not sub and not quiet and role == "principal" and self.brain.settings.get("plan_approval") is not False:
+                approve = getattr(self, "approve_plan", None)   # "plan mode": show the plan and wait for a yes before touching anything
+                if approve and not approve(goal, plan):
+                    audit("plan", {"goal": goal, "plan": plan, "approved": False})
+                    return "Certo, não executei nada. Se quiser, me diga o que mudar no plano."
+                audit("plan", {"goal": goal, "plan": plan, "approved": True})
             if plan:
-                message += "\n\nPLANO (siga em ordem):\n" + "\n".join(f"{i + 1}. {p}" for i, p in enumerate(plan))
+                message += "\n\nPLANO (siga em ordem; em cada passo diga em qual item está com \"plan_step\": N):\n" + "\n".join(f"{i + 1}. {p}" for i, p in enumerate(plan))
                 status("Plano: " + " → ".join(plan)[:120])
+                self._plan_progress(plan, 0)
             audit("task", {"goal": goal, "role": role, "plan": plan})
             last_sig, repeats, invalid = None, 0, 0
             fails = {}   # how many times each tool answered with an error
@@ -348,9 +372,9 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
                     return f"Tive um problema ao pensar: {e}"
                 hist += [("user", message), ("model", raw)]
                 data = self.brain.extract_json(raw)
-                if not data or "action" not in data:
+                if not data or ("action" not in data and "actions" not in data):
                     data = self._salvage(raw)   # broken JSON: rebuild the action from what is readable (the code itself comes from the ``` blocks)
-                if not data or "action" not in data:
+                if not data or ("action" not in data and "actions" not in data):
                     invalid += 1
                     if invalid >= 4:
                         return "Não consegui montar uma ação válida depois de várias tentativas. Tente dividir o pedido em partes menores ou descrever com mais detalhe."
@@ -358,30 +382,45 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
                                'Se estava escrevendo código, envie só {"action":"write_file","args":{"path":"arquivo"}} e, logo depois, o código completo num bloco ```, fora do JSON.')
                     continue
                 invalid = 0
-                action = str(data.get("action"))
-                args = data["args"] if isinstance(data.get("args"), dict) else {k: v for k, v in data.items() if k not in ("thought", "action", "args")}
-                args = self._attach_code(action, args, raw)
-                if args.pop("_as_write", False):
-                    action = "write_file"
-                    args.pop("old", None)
-                    args.pop("new", None)
-                if action == "final":
-                    text = str(args.get("text") or args.get("message") or "Pronto.")
-                    if verify and not sub and evidence and len(text) <= 700 and self.brain.settings.get("agent_verify") is not False:   # long answers would cost minutes to rewrite
-                        status("Conferindo a resposta...")
-                        text = self._verify(goal, evidence, text)
-                    audit("final", {"text": text[:500], "role": role})
-                    return text
-                sig = json.dumps([action, args], sort_keys=True, ensure_ascii=False)
+                multi = data.get("actions") if "action" not in data else None
+                calls = None
+                if isinstance(multi, list):   # several tools asked in the same step
+                    calls = [(str(a.get("action")), a.get("args") if isinstance(a.get("args"), dict) else {}) for a in multi[:4]
+                             if isinstance(a, dict) and a.get("action") and str(a.get("action")) != "final"]
+                if calls:
+                    action, args = "+".join(n for n, _ in calls), {}
+                    sig = json.dumps(calls, sort_keys=True, ensure_ascii=False)
+                else:
+                    action = str(data.get("action"))
+                    args = data["args"] if isinstance(data.get("args"), dict) else {k: v for k, v in data.items() if k not in ("thought", "action", "args", "actions", "plan_step")}
+                    args = self._attach_code(action, args, raw)
+                    if args.pop("_as_write", False):
+                        action = "write_file"
+                        args.pop("old", None)
+                        args.pop("new", None)
+                    if action == "final":
+                        text = str(args.get("text") or args.get("message") or "Pronto.")
+                        if verify and not sub and evidence and len(text) <= 700 and self.brain.settings.get("agent_verify") is not False:   # long answers would cost minutes to rewrite
+                            status("Conferindo a resposta...")
+                            text = self._verify(goal, evidence, text)
+                        audit("final", {"text": text[:500], "role": role})
+                        self._plan_progress(plan, len(plan))
+                        return text
+                    sig = json.dumps([action, args], sort_keys=True, ensure_ascii=False)
                 repeats = repeats + 1 if sig == last_sig else 0
                 last_sig = sig
                 if repeats >= 2:
                     return "Fiquei repetindo a mesma ação sem avançar; parei para não gastar tempo. Pode reformular o pedido?"
-                status(f"Passo {step}: {action}")
-                obs = self.call(action, args if isinstance(args, dict) else {})
+                if isinstance(data.get("plan_step"), int):
+                    self._plan_progress(plan, max(0, int(data["plan_step"]) - 1))   # the model says which step of the plan it is on: earlier ones are done
+                status(f"Passo {step}: {action}" + (" (ao mesmo tempo)" if calls and len(calls) > 1 else ""))
+                obs = self._call_many(calls) if calls else self.call(action, args if isinstance(args, dict) else {})
                 if not sub and not quiet:
-                    brief = next((str(args[k]) for k in ("path", "command", "query", "url", "name", "topic", "source", "folder", "expression") if isinstance(args, dict) and args.get(k)), "")
-                    self.last_steps.append(f"{action}  {brief[:80]}".rstrip())
+                    if calls:
+                        for n, a in calls:
+                            self.last_steps.append(f"{n}  {self._brief(a)}".rstrip())
+                    else:
+                        self.last_steps.append(f"{action}  {self._brief(args)}".rstrip())
                 if str(obs).startswith("ERRO"):
                     fails[action] = fails.get(action, 0) + 1
                     if fails[action] >= 4:
@@ -396,6 +435,40 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
             return self._limit_summary(goal, done_steps)
         finally:
             self._tl.role, self._tl.cancelled = previous
+
+    @staticmethod
+    def _brief(args):
+        return next((str(args[k])[:80] for k in ("path", "command", "query", "url", "name", "topic", "source", "folder", "expression", "task") if isinstance(args, dict) and args.get(k)), "")
+
+    def _context(self):
+        """The per-thread state of this task (role, project folder, permissions), so tools run on worker threads behave as if on this one."""
+        return {k: getattr(self._tl, k) for k in ("role", "project", "granted", "denied", "cancelled") if hasattr(self._tl, k)}
+
+    def _call_many(self, calls):
+        """Runs several tool calls from one step: read-only independent ones at the same time (much faster), anything else one after the other."""
+        ctx = self._context()
+
+        def one(item):
+            for k, v in ctx.items():
+                setattr(self._tl, k, v)
+            name, a = item
+            return self.call(name, a)
+        if len(calls) > 1 and all(n in PARALLEL_SAFE for n, _ in calls):
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(calls)) as pool:
+                results = list(pool.map(one, calls))
+        else:
+            results = [one(c) for c in calls]
+        share = max(600, OBS_LIMIT // len(calls))
+        return "\n\n".join(f"[{i + 1}] {n}: {_clip(r, share)}" for i, ((n, _), r) in enumerate(zip(calls, results)))
+
+    def _plan_progress(self, plan, done):
+        cb = getattr(self, "on_plan_progress", None)
+        if cb and plan:
+            try:
+                cb(plan, done)
+            except Exception:
+                pass
 
     def _limit_summary(self, goal, done_steps):
         """The step limit was reached: say what was done and what is missing, instead of a generic apology."""
@@ -445,6 +518,9 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
         return self._tl.granted
 
     def ask(self, text, danger=False, path=None):
+        if getattr(self._tl, "unattended", False):   # a routine running by itself: nobody to approve, so nothing that changes things
+            audit("confirm", {"text": text[:200], "approved": False, "auto": "unattended"})
+            return False
         if path is not None and self.project and self.in_project(path) and not danger:
             if self._grant():
                 audit("confirm", {"text": text[:200], "approved": True, "auto": "project"})
@@ -877,7 +953,10 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
         parts = [tools._strip(x) for x in re.findall(r"<(?:p|li|h[1-4]|pre|td)[^>]*>([\s\S]*?)</(?:p|li|h[1-4]|pre|td)>", raw, flags=re.I)]
         return _clip("\n".join(p for p in parts if len(p) > 25), int(max_chars))
 
-    def t_web_search(self, query):
+    def t_web_search(self, query, mode="rapida"):
+        """mode "rapida": the first results; "profunda": several phrasings, the best pages read and their key passages (slower, much fuller)."""
+        if str(mode).lower().startswith("prof") or str(mode).lower() == "deep":
+            return self.deep_search(query)
         snippets, _ = tools.web_search(query, max_pages=0)
         return "\n".join(f"{i + 1}. {s}" for i, s in enumerate(snippets)) or "Nada encontrado."
 
@@ -885,13 +964,32 @@ PAPEL: você é um sub-agente de {role}. Você SÓ consulta: não altere, apague
         hits = kb.search(query, 3)
         return "\n\n".join(f"[{t}] ({src})\n{txt[:900]}" for s, t, src, txt in hits) or "A base de conhecimento não tem nada sobre isso. Use kb_learn."
 
-    def t_delegate(self, task, role="explorar"):
+    def t_delegate(self, task="", role="explorar", tasks=None):
+        """One sub-agent, or several at once (each with its own context): they only read, and their answers come back together."""
         if self.restricted:
             return "ERRO: sub-agentes não podem delegar."
-        role = "verificar" if str(role).lower().startswith("verif") else "explorar"
+        jobs = []
+        for item in (tasks if isinstance(tasks, list) and tasks else [{"role": role, "task": task}])[:4]:
+            if isinstance(item, dict) and str(item.get("task") or "").strip():
+                r = str(item.get("role") or "explorar").lower()
+                r = next((x for x in SUB_ROLES if r.startswith(x[:4])), "explorar")
+                jobs.append((r, str(item["task"])))
+        if not jobs:
+            return "ERRO: diga a tarefa do sub-agente."
         cancelled = getattr(self._tl, "cancelled", None) or (lambda: False)
-        result = self._loop(str(task), role=role, max_steps=4, cancelled=cancelled)
-        return f"[sub-agente de {role}] {result}"
+        ctx = self._context()
+
+        def run(job):
+            for k, v in ctx.items():
+                setattr(self._tl, k, v)
+            return self._loop(job[1], role=job[0], max_steps=5, cancelled=cancelled, quiet=True, verify=False)
+        if len(jobs) == 1:
+            results = [run(jobs[0])]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+                results = list(pool.map(run, jobs))
+        return "\n\n".join(f"[sub-agente de {r}] {res}" for (r, _), res in zip(jobs, results))
 
     SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".idea", ".gradle", ".kotlin", "target", ".next", ".cache", "models"}
     KEY_FILES = ("readme", "package.json", "pyproject.toml", "requirements.txt", "dockerfile", "docker-compose", "makefile", "pom.xml", "build.gradle", "cargo.toml", "go.mod", ".env.example", "main.py", "app.py", "index.js", "index.ts")

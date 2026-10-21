@@ -17,3 +17,4 @@ psutil
 msal
 playwright
 praat-parselmouth
+python-pptx

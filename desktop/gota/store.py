@@ -1,5 +1,5 @@
 """Everything Gota remembers, as small JSON files in %APPDATA%/Gota (no audio is stored)."""
-import json, os, sys, time, uuid
+import re, json, os, sys, time, uuid
 from pathlib import Path
 
 ROOT = Path(os.environ.get("GOTA_HOME") or (Path(os.environ.get("APPDATA", Path.home())) / "Gota"))
@@ -117,6 +117,23 @@ class Chats:
 
     def delete(self, cid):
         self.path(cid).unlink(missing_ok=True)
+
+    def search(self, query, limit=30):
+        """Chats whose title or messages contain every word of `query`: [{id, title, updated, snippet}], newest first. Lets him pick up an old thread days later."""
+        words = [w for w in re.sub(r"\s+", " ", str(query).lower()).split() if w]
+        out = []
+        for c in self.list():
+            hay_title = c["title"].lower()
+            hit = None
+            for m in c["messages"]:
+                low = m["text"].lower()
+                if words and all(w in low or w in hay_title for w in words):
+                    i = max(0, low.find(words[0]) - 40)
+                    hit = ("Você: " if m["role"] == "user" else "Gota: ") + m["text"][i:i + 140].replace("\n", " ")
+                    break
+            if hit or (words and all(w in hay_title for w in words)):
+                out.append({"id": c["id"], "title": c["title"], "updated": c["updated"], "snippet": hit or c["title"], "project": c.get("project")})
+        return out[:limit]
 
 
 class Settings:

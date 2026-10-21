@@ -456,6 +456,164 @@ class TestMarkdownAndSteps(unittest.TestCase):
         self.assertEqual(App._step_symbol("web_search veeam"), "🌐")
         self.assertEqual(App._step_symbol("kb_search raid"), "•")
 
+class AgentParallel(unittest.TestCase):
+    """Several tools in one step run at the same time; sub-agents run side by side; the plan can be refused."""
+
+    class Script:
+        def __init__(self, replies, plan=None):
+            self.replies, self.plan = list(replies), plan
+        def chat(self, key, system, history, user_text, image=None, think=False, on_delta=None):
+            return self.replies.pop(0)
+        def one_shot(self, system, user_text, image=None, on_delta=None):
+            if "dividem tarefas" in system or "divide tarefas" in system:
+                return json.dumps({"steps": self.plan or []})
+            return '{"ok":true}'
+
+    def make(self, replies, plan=None):
+        from gota import brain
+        llm = self.Script(replies, plan)
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: llm, images=None)
+        b.agent.ask = lambda text, danger=False, path=None: True
+        return b, b.agent
+
+    def test_parallel_reads_finish_together(self):
+        import time
+        b, a = self.make(['{"thought":"x","actions":[{"action":"slow_a","args":{}},{"action":"slow_b","args":{}}]}', '{"action":"final","args":{"text":"feito"}}'])
+        a.t_slow_a = lambda: (time.sleep(0.6), "A")[1]
+        a.t_slow_b = lambda: (time.sleep(0.6), "B")[1]
+        from gota import agent
+        agent.PARALLEL_SAFE.update({"slow_a", "slow_b"})
+        try:
+            t0 = time.time()
+            out = a._loop("faça duas leituras ao mesmo tempo agora", verify=False)
+            took = time.time() - t0
+        finally:
+            agent.PARALLEL_SAFE.difference_update({"slow_a", "slow_b"})
+        self.assertEqual(out, "feito")
+        self.assertLess(took, 1.1)   # one after the other would take 1.2 s
+
+    def test_delegate_runs_several_sub_agents(self):
+        b, a = self.make(['{"action":"final","args":{"text":"achado 1"}}', '{"action":"final","args":{"text":"achado 2"}}'])
+        out = a.t_delegate(tasks=[{"role": "explorar", "task": "olhe a"}, {"role": "revisar", "task": "olhe b"}])
+        self.assertIn("sub-agente de explorar", out)
+        self.assertIn("sub-agente de revisar", out)
+        self.assertIn("achado 1", out)
+        self.assertIn("achado 2", out)
+
+    def test_refused_plan_stops_before_acting(self):
+        b, a = self.make(['{"action":"final","args":{"text":"não deveria chegar aqui"}}'], plan=["Listar arquivos", "Ler o log", "Resumir o erro"])
+        a.approve_plan = lambda goal, plan: False
+        out = a._loop("investigue o erro do servidor olhando os logs e arquivos de configuração", verify=False)
+        self.assertIn("não executei nada", out)
+
+class MemoryAndChats(unittest.TestCase):
+    def test_capture_preferences_and_environment(self):
+        from gota import memory
+        m = memory.Memory(Path(tempfile.mkdtemp()) / "m.json")
+        self.assertEqual([i["type"] for i in m.capture("Eu prefiro respostas curtas e sem emoji")], ["feedback"])
+        self.assertEqual([i["type"] for i in m.capture("Nosso ambiente tem três servidores VMware e um backup Veeam")], ["project"])
+        self.assertEqual(m.capture("Qual a capital da França?"), [])           # questions are not memories
+        self.assertEqual(len(m.items()), 2)
+        m.capture("eu prefiro respostas curtas, sem emoji nenhum")               # almost the same: updated, not duplicated
+        self.assertEqual(len(m.items()), 2)
+        self.assertIn("respostas curtas", m.block("qualquer coisa"))
+        m.delete(m.items()[0]["id"])
+        self.assertEqual(len(m.items()), 1)
+
+    def test_search_old_chats(self):
+        chats = store.Chats()
+        c = chats.create("Veeam fita")
+        chats.append(c["id"], "user", "meu job JOB_TAPE_SEMANAL falhou ontem")
+        chats.append(c["id"], "gota", "Verifique o drive de fita, senhor.")
+        hits = chats.search("job tape semanal")
+        self.assertTrue(any(h["id"] == c["id"] for h in hits))
+        self.assertIn("JOB_TAPE", next(h for h in hits if h["id"] == c["id"])["snippet"])
+        self.assertEqual(chats.search("palavra que nunca foi dita xyz"), [])
+
+
+class ExtToolsTests(unittest.TestCase):
+    def setUp(self):
+        from gota import brain
+        self.b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        self.a = self.b.agent
+        self.a.ask = lambda text, danger=False, path=None: True
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_notebook_cells_are_edited_with_backup(self):
+        nb = {"cells": [{"cell_type": "code", "metadata": {}, "source": ["print(1)"], "outputs": [], "execution_count": 1}], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+        f = self.dir / "a.ipynb"
+        f.write_text(json.dumps(nb), "utf-8")
+        self.assertIn("[0] code", self.a.t_notebook_edit(str(f), "read"))
+        self.a.t_notebook_edit(str(f), "insert", 1, "# título", "markdown")
+        self.a.t_notebook_edit(str(f), "replace", 0, "print(2)")
+        cells = json.loads(f.read_text("utf-8"))["cells"]
+        self.assertEqual("".join(cells[0]["source"]), "print(2)")
+        self.assertEqual(cells[1]["cell_type"], "markdown")
+        self.a.t_notebook_edit(str(f), "delete", 1)
+        self.assertEqual(len(json.loads(f.read_text("utf-8"))["cells"]), 1)
+
+    def test_chart_is_a_self_contained_page_with_dark_mode(self):
+        import webbrowser
+        webbrowser.open = lambda *a, **k: True
+        out = self.a.t_make_chart(str(self.dir / "g.html"), "bar", "Vendas", ["jan", "fev"], [{"name": "x", "values": [3, 5]}])
+        page = (self.dir / "g.html").read_text("utf-8")
+        self.assertIn("prefers-color-scheme:dark", page)
+        self.assertIn("<rect", page)
+        self.assertIn("criado", out)
+
+    def test_github_refuses_dangerous_commands(self):
+        self.assertIn("proibida", self.a.t_github("repo delete algo/repo"))
+
+    def test_large_document_is_read_in_parts(self):
+        text = "\n".join(f"Linha {i}: o servidor SRV{i % 7} reiniciou às {i % 24}h" for i in range(2500))
+        f = self.dir / "grande.txt"
+        f.write_text(text, "utf-8")
+
+        class Fast:
+            def cloud_ready(self): return True
+            def one_shot(self, system, user, image=None, on_delta=None):
+                return "[parte] SRV3 reiniciou" if "PARTE" in user else "SRV3 reiniciou várias vezes (p.1)"
+        self.b.llm = lambda: Fast()
+        out = self.a.t_read_document(str(f), "quais servidores reiniciaram?")
+        self.assertIn("SRV3", out)
+        self.assertIn("DADOS EXTERNOS", out)   # content read from files is data, never instructions
+
+    def test_worktree_isolates_risky_changes(self):
+        import subprocess
+        repo = self.dir / "proj"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)
+        run("init", "-q"); run("config", "user.email", "t@t"); run("config", "user.name", "t")
+        (repo / "a.txt").write_text("x")
+        run("add", "."); run("commit", "-qm", "init")
+        out = self.a.t_git_worktree("create", str(repo), "teste")
+        self.assertTrue((self.dir / "proj-teste").is_dir(), out)
+        self.assertIn("proj-teste", self.a.t_git_worktree("list", str(repo)))
+
+
+class RoutinesTests(unittest.TestCase):
+    def test_due_logic(self):
+        from datetime import datetime
+        from gota.routines import Routines
+        r = {"id": 1, "name": "x", "goal": "g", "when": "08:00", "repeat": "daily", "last": 0}
+        self.assertFalse(Routines.due(r, datetime(2026, 10, 21, 7, 59)))
+        self.assertTrue(Routines.due(r, datetime(2026, 10, 21, 8, 5)))
+        r["last"] = datetime(2026, 10, 21, 8, 1).timestamp()
+        self.assertFalse(Routines.due(r, datetime(2026, 10, 21, 9, 0)))          # already ran today
+        self.assertTrue(Routines.due(r, datetime(2026, 10, 22, 8, 1)))           # next day
+        w = {"id": 2, "name": "x", "goal": "g", "when": "08:00", "repeat": "weekdays", "last": 0}
+        self.assertFalse(Routines.due(w, datetime(2026, 10, 24, 9, 0)))          # Saturday
+
+    def test_unattended_agent_refuses_changes(self):
+        from gota import brain
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        b.confirm = lambda t, d: True
+        b.agent._tl.unattended = True
+        try:
+            self.assertFalse(b.agent.ask("apagar tudo", True))
+        finally:
+            b.agent._tl.unattended = False
+
 if __name__ == "__main__":
     unittest.main()
 
