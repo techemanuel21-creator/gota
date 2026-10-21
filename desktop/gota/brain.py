@@ -34,7 +34,8 @@ TECH_WORDS = re.compile(
     r"raid|iscsi|vmware|vsphere|esxi|hyper v|proxmox|servidor|bsod|tela azul|evento|event id|bash|regex|ssl|tls|"
     r"certificado|protocolo|vlan|switch|roteador|snmp|zabbix|prometheus|grafana|nginx|apache|iis|ciberseguranca|"
     r"infraestrutura|hardening|criptografia|siem|edr|incidente|auditoria|iso 27001|nist|mitre|owasp|exchange|"
-    r"azure|aws|nuvem|terraform|ansible|jenkins|monitoramento|latencia|subnet|bgp|ospf|snapshot)\b")
+    r"azure|aws|nuvem|terraform|ansible|jenkins|monitoramento|latencia|subnet|bgp|ospf|snapshot|cisco|trunk|switchport|catalyst|"
+    r"fortigate|pfsense|mikrotik|juniper|stp|lacp|acl|nat|ios|nutanix|hyperv|datastore|vcenter|cluster)\b")
 TIME_WORDS = re.compile(r"\b(hoje|ontem|amanha|essa semana|esta semana|esse mes|este mes|esse ano|este ano|semana passada|mes passado)\b")
 QUESTION_START = re.compile(
     r"^(?:(?:e|mas|entao|me diz|me diga|me fala|me conta|voce sabe|sabe|sabe me dizer|pode me dizer)\s+)?"
@@ -241,8 +242,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             # first pass without the slow "thinking" mode: it is enough to decide what to do (look at the screen, search, answer...)
             will_override = image is None and tools.is_online() and bool(self.is_question(goal, lower)) and not self.is_command(lower) and (self.needs_fresh(lower) or bool(TECH_WORDS.search(lower)))
             self._fast = False
-            if will_override and not self.needs_fresh(lower) and getattr(llm, "cloud_ready", lambda: False)():
-                # the cloud model already knows IT: one call, with our notes attached, instead of "ask, discard, search the internet, ask again"
+            if image is None and not self.needs_fresh(lower) and TECH_WORDS.search(lower) and getattr(llm, "cloud_ready", lambda: False)():
+                # the cloud model already knows IT: one call, with our notes attached (also for "configure/escreva..." requests), instead of
+                # "answer, discard, search the internet, answer again"
                 self._fast, will_override = True, False
                 material = self.quick_material(goal)
                 if material:

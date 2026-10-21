@@ -427,6 +427,13 @@ class TestCatMouth(unittest.TestCase):
             widgets.set_speaking(False)
             root.destroy()
 
+class TestCiscoSkill(unittest.TestCase):
+    def test_switch_request_finds_the_cisco_skill(self):
+        from gota import skills
+        goal = ("configurar um switch gigabit cisco com as seguintes portas e vlans, resetar essas portas para config de fabrica antes de configurar\n"
+                "Trunk: 39 e 40; Lan dos FWs\nVlan acess 1 e voice vlan 13: 13 a 27; PC/Ramal")
+        self.assertEqual(skills.search(goal, 1)[0][1]["name"], "cisco-configurar-portas-e-vlans")
+
 if __name__ == "__main__":
     unittest.main()
 
