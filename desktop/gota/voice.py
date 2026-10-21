@@ -112,6 +112,42 @@ def spoken_form(text):
     return re.sub(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b", ident, text)
 
 
+EN_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/joe/medium/en_US-joe-medium.onnx"   # native US English, male, CC0 (public domain)
+EN_PITCH = 164.0    # median pitch (Hz) of the Gota voice 'faber', measured; the English voice is moved to it
+EN_FORMANT = 1.10   # vocal-tract shift that brings the English voice's formants closest to faber's (measured)
+
+
+def ensure_english_voice(download=True):
+    """The English voice 'joe' (Piper, CC0, ~63 MB) that reads English phrases with a native pronunciation. Returns the model path or None (not here yet)."""
+    model = PIPER_DIR / "en_US-joe-medium.onnx"
+    if model.exists() and Path(str(model) + ".json").exists():
+        return model
+    if not download:
+        return None
+    try:
+        PIPER_DIR.mkdir(parents=True, exist_ok=True)
+        for url, dest in ((EN_BASE, model), (EN_BASE + ".json", Path(str(model) + ".json"))):
+            if not dest.exists():
+                tmp = Path(str(dest) + ".part")
+                with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "GotaDesktop/1.0"}), timeout=60) as r, open(tmp, "wb") as f:
+                    while chunk := r.read(1 << 20):
+                        f.write(chunk)
+                tmp.replace(dest)
+        return model
+    except Exception:
+        return None
+
+
+def match_voice(samples, rate):
+    """Moves a voice to the pitch and vocal-tract size of the Gota voice (Praat "Change gender"), so the English sounds like the same speaker."""
+    import numpy as np
+    import parselmouth
+    from parselmouth.praat import call
+    snd = parselmouth.Sound(np.asarray(samples, dtype=np.float64), sampling_frequency=rate)
+    out = call(snd, "Change gender", 60, 300, EN_FORMANT, EN_PITCH, 1.0, 1.0)
+    return np.asarray(out.values[0], dtype=np.float64)
+
+
 class Speaker:
     """A classic butler's voice: male Piper voice, unhurried. Falls back to Windows' own voice if Piper is unavailable."""
 
@@ -146,8 +182,25 @@ class Speaker:
     # the voice swallows the Portuguese "lh" (detalhadas -> detaadas, filho -> fio); "l" + "i" is pronounced reliably
     PT_FIX = {"ʎ": ["l", "i"]}
 
+    def _synth_english(self, text, np):
+        """Native English (the 'joe' voice) moved to the pitch and timbre of the Gota voice."""
+        from piper.config import SynthesisConfig
+        chunks = []
+        for c in self.en_voice.synthesize(text, syn_config=SynthesisConfig(length_scale=1.12)):
+            x = np.frombuffer(c.audio_int16_bytes, dtype=np.int16).astype(np.float64) / 32768.0
+            try:
+                x = match_voice(x, self.en_voice.config.sample_rate)
+            except Exception:
+                pass
+            peak = float(np.max(np.abs(x))) if x.size else 0.0
+            chunks.append((np.clip(x / peak if peak > 1e-8 else x, -1.0, 1.0) * 32767).astype(np.int16))
+        return np.concatenate(chunks) if chunks else np.zeros(1, dtype=np.int16)
+
     def _synth(self, piper, text, lang, np):
-        """Speech for one piece: espeak phonemes (English or Portuguese), the Portuguese sound fixes, then the voice."""
+        """Speech for one piece: English by the English voice (or, until it is installed, by the Portuguese voice with English sounds);
+        Portuguese through espeak phonemes with the sound fixes."""
+        if lang == "en" and getattr(self, "en_voice", None) is not None:
+            return self._synth_english(text, np)
         chunks = []
         for phonemes in piper.phonemize(text):
             if not phonemes:
@@ -189,6 +242,17 @@ class Speaker:
         piper = self._load_piper()
         sapi = None if piper else self._load_sapi()
         self.male = piper is not None
+        self.en_voice = None
+        if piper:   # the English voice is fetched in the background; until it is here English is spoken by the Portuguese voice with English sounds
+            def load_en():
+                try:
+                    from piper import PiperVoice
+                    model = ensure_english_voice()
+                    if model:
+                        self.en_voice = PiperVoice.load(str(model))
+                except Exception:
+                    pass
+            threading.Thread(target=load_en, daemon=True).start()
         self.ready.set()
         while True:
             text, done, gen = self.q.get()

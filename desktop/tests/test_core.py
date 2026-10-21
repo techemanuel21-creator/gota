@@ -392,6 +392,20 @@ class TestSpokenForm(unittest.TestCase):
         langs = dict((s.strip(), l) for l, s in voice.split_languages("O resultado é Last Result Failed."))
         self.assertEqual(langs.get("Last Result Failed."), "en")
 
+class TestEnglishVoice(unittest.TestCase):
+    def test_match_voice_moves_pitch(self):
+        import numpy as np
+        from gota import voice
+        sr = 22050
+        t = np.arange(sr * 1) / sr
+        x = 0.4 * np.sin(2 * np.pi * 90 * t) * (1 + 0.3 * np.sin(2 * np.pi * 3 * t))   # a low buzz around 90 Hz
+        y = voice.match_voice(x, sr)
+        self.assertGreater(len(y), sr // 2)
+        import parselmouth
+        pitch = parselmouth.Sound(y, sampling_frequency=sr).to_pitch(pitch_floor=60, pitch_ceiling=400)
+        f0 = parselmouth.praat.call(pitch, "Get quantile", 0, 0, 0.5, "Hertz")
+        self.assertGreater(f0, 130)
+
 if __name__ == "__main__":
     unittest.main()
 
