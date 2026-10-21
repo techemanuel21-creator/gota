@@ -710,6 +710,28 @@ class SyntaxHighlighting(unittest.TestCase):
         finally:
             root.destroy()
 
+class NetconfFastPath(unittest.TestCase):
+    REQUEST = ("crie um comando para eu\nconfigurar um switch gigabit cisco, resetar essas portas antes\n\nCom a VLAN 900 em mode acess (Não existe ainda) :\n41; Link02\n42; Link01FW01\n43; Link01FW02\n\n"
+               "Trunk:\n39 e 40; Lan dos FWs\n28 a 37; Antenas\n\nVlan acess 1 e voice vlan 13:\n13 a 27; PC/Ramal\n\nVlan acess 1\n11 e 12; DVR\n3 a 10; Impressoras\n1 e 2; Servidor\n")
+
+    def test_script_follows_the_request_exactly(self):
+        from gota import netconf
+        out = netconf.try_answer(self.REQUEST)
+        self.assertIn("default interface range GigabitEthernet1/0/1-37", out)
+        self.assertIn("default interface range GigabitEthernet1/0/39-43", out)       # port 38 is never touched
+        self.assertNotRegex(out, r"default interface range [^\n]*38")
+        self.assertIn("interface GigabitEthernet1/0/42\n description Link01FW01\n switchport mode access\n switchport access vlan 900", out)
+        self.assertIn("interface range GigabitEthernet1/0/13-27\n description PC/Ramal\n switchport mode access\n switchport access vlan 1\n switchport voice vlan 13", out)
+        self.assertIn("interface range GigabitEthernet1/0/28-37\n description Antenas\n switchport mode trunk\nexit", out)   # no invented allowed/native vlan
+        self.assertNotIn("allowed", out.split("```")[1])
+        self.assertTrue(out.split("```")[1].rstrip().endswith("write memory"))
+
+    def test_unclear_requests_are_left_to_the_model(self):
+        from gota import netconf
+        self.assertIsNone(netconf.try_answer("o que é uma vlan?"))
+        self.assertIsNone(netconf.try_answer("Trunk:\n5 e 6; A\nVlan acess 2\n6 a 8; B\n"))     # port 6 twice: ambiguous
+        self.assertIsNone(netconf.try_answer("41; Link02\n42; Link01"))                          # no heading: which vlan/mode?
+
 if __name__ == "__main__":
     unittest.main()
 

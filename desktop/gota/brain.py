@@ -2,7 +2,7 @@
 import json, re, time
 from pathlib import Path
 from datetime import datetime
-from . import memory as memory_mod, agent as agent_mod, kb, quick, skills as skills_mod, tools, outlook as outlook_mod, whatsapp as wa_mod
+from . import netconf, memory as memory_mod, agent as agent_mod, kb, quick, skills as skills_mod, tools, outlook as outlook_mod, whatsapp as wa_mod
 from .tools import norm
 
 WEEKDAYS = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
@@ -212,6 +212,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
                 self.memory.capture(goal)
             except Exception:
                 pass
+            fast = netconf.try_answer(goal, sir)   # a table of switch ports and VLANs: the script is built right here, instantly and by the rules
+            if fast:
+                return fast, None
             if is_retry(lower) and self.last_image_prompt:
                 return self.draw(self.last_image_prompt)
             quick = self.quick_answer(goal, lower)
