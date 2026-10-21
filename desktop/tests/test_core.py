@@ -953,7 +953,7 @@ class GlitchCleaning(unittest.TestCase):
         self.assertTrue(seen and "|" not in seen[-1])
 
 class UiBehaviours(unittest.TestCase):
-    def test_long_user_message_is_folded_with_ler_mais(self):
+    def test_long_user_message_is_folded_with_ver_mais(self):
         import tkinter as tk
         from gota import widgets
         root = tk.Tk()
@@ -963,14 +963,14 @@ class UiBehaviours(unittest.TestCase):
             card = widgets.bubble(root, long_text, True, 600)
             root.update()
             labels = lambda: [w.cget("text") for w in card.winfo_children()[0].winfo_children() if isinstance(w, tk.Label)]
-            self.assertIn("Ler mais  ▾", labels())
+            self.assertIn("Ver mais  ▾", labels())
             texts = lambda: "".join(w.get("1.0", "end") for w in card.winfo_children()[0].winfo_children() if isinstance(w, tk.Text))
             self.assertNotIn("linha 19", texts())                 # only a preview
             folded_h = card.winfo_reqheight()
-            card.toggle()                                         # what a click on "Ler mais" does
+            card.toggle()                                         # what a click on "Ver mais" does
             root.update()
             self.assertIn("linha 19", texts())                    # expanded: the whole message
-            self.assertIn("Ler menos  ▴", labels())
+            self.assertIn("Ver menos  ▴", labels())
             self.assertGreater(card.winfo_reqheight(), folded_h)
             short = widgets.bubble(root, "oi, tudo bem?", True, 600)
             self.assertFalse([w for w in short.winfo_children()[0].winfo_children() if isinstance(w, tk.Label)])   # short messages have no button

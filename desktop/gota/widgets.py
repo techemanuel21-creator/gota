@@ -541,7 +541,7 @@ class ChatInput(tk.Canvas):
         self.text.focus_set()
 
 
-COLLAPSE_LINES, COLLAPSE_CHARS = 8, 700   # a user message longer than this shows a preview and a "Ler mais" button
+COLLAPSE_LINES, COLLAPSE_CHARS = 8, 700   # a user message longer than this shows a preview and a "Ver mais" button
 
 
 def _preview(text, lines=6, chars=420):
@@ -554,7 +554,7 @@ def _preview(text, lines=6, chars=420):
 
 def bubble(parent, text, mine, maxw=560):
     """A chat card: rounded, sized to its content; the text is selectable and ``` blocks become separate code boxes with a Copy button.
-    A long message of the user is shown as a preview with a "Ler mais" button that expands it (and "Ler menos" folds it back)."""
+    A long message of the user is shown as a preview with a "Ver mais" button that expands it (and "Ler menos" folds it back)."""
     pad_x, pad_y, r = (16, 12, 18)
     bg = SURFACE2 if mine else SURFACE
     root = parent.winfo_toplevel()
@@ -584,7 +584,7 @@ def bubble(parent, text, mine, maxw=560):
             w = _prose(frame, blk[1], FONT, bg, width, root) if blk[0] == "text" else _code_block(frame, blk[1], blk[2], root, width)
             w.pack(fill="x", pady=(0 if i == 0 else 8, 0))
         if long:
-            more = tk.Label(frame, text="Ler menos  ▴" if view["open"] else "Ler mais  ▾", bg=bg, fg=ACCENT, font=("Segoe UI", 10, "bold"), cursor="hand2", anchor="w")
+            more = tk.Label(frame, text="Ver menos  ▴" if view["open"] else "Ver mais  ▾", bg=bg, fg=ACCENT, font=("Segoe UI", 10, "bold"), cursor="hand2", anchor="w")
             more.pack(fill="x", pady=(8, 0))
             more.bind("<Button-1>", lambda e: toggle())
         layout()
