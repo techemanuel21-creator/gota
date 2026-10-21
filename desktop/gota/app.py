@@ -164,7 +164,7 @@ class App(tk.Tk):
             if thinking is not None and thinking.winfo_exists():
                 thinking.pack_forget()   # the text itself now shows that he is answering
         self._live_label.configure(text=self._live_text)
-        self.scroll.yview_moveto(1.0)
+        self.to_bottom((0,))
 
     def _live_clear(self):
         row = getattr(self, "_live_row", None)
@@ -563,7 +563,8 @@ class App(tk.Tk):
         self.scroll.pack(fill="both", expand=True)
         self.msgs = tk.Frame(self.scroll, bg=BG)
         self.win_id = self.scroll.create_window((0, 0), window=self.msgs, anchor="nw")
-        self.msgs.bind("<Configure>", lambda e: self.scroll.configure(scrollregion=self.scroll.bbox("all")))
+        self._stick = True   # follow the end of the chat while it grows, until the user scrolls up
+        self.msgs.bind("<Configure>", self._msgs_changed)
         self.scroll.bind("<Configure>", self._on_resize)
         self.bind_all("<MouseWheel>", self._wheel)
 
@@ -592,6 +593,27 @@ class App(tk.Tk):
         if not self.settings.get("tutorial"):
             self.after(600, self.tutorial)
 
+    def _msgs_changed(self, _e=None):
+        self.scroll.configure(scrollregion=self.scroll.bbox("all"))
+        if self._stick:
+            self.scroll.yview_moveto(1.0)
+
+    def to_bottom(self, delays=(0, 60, 250, 700)):
+        """Scrolls to the newest message. Done several times because the layout settles a moment after a message is added."""
+        self._stick = True
+
+        def go():
+            try:
+                if not self.scroll.winfo_exists():
+                    return
+                self.update_idletasks()
+                self.scroll.configure(scrollregion=self.scroll.bbox("all"))
+                self.scroll.yview_moveto(1.0)
+            except Exception:
+                pass
+        for d in delays:
+            self.after(d, go)
+
     def _on_resize(self, e):
         self.scroll.itemconfigure(self.win_id, width=e.width)
         if not self.render_width:
@@ -608,6 +630,7 @@ class App(tk.Tk):
         while w is not None:
             if w is self.scroll:
                 self.scroll.yview_scroll(int(-ev.delta / 120) * 2, "units")
+                self._stick = self.scroll.yview()[1] >= 0.98   # scrolled up to read: stop following; back at the end: follow again
                 return
             w = w.master
 
@@ -1133,7 +1156,7 @@ class App(tk.Tk):
         for m in chat["messages"]:
             self.add_message(m["role"], m["text"], m.get("image"), m.get("steps"))
         self.build_sidebar()
-        self.after(80, lambda: self.scroll.yview_moveto(1.0))
+        self.to_bottom()
         self.after(400, lambda: self.warm_chat(cid))
 
     def _project_ui(self):
@@ -1166,7 +1189,7 @@ class App(tk.Tk):
             bubble(row, text, mine, self.maxw(plain=not mine)).pack(side="right" if mine else "left")
         if steps and not mine:
             self._steps_card(steps)
-        self.after(60, lambda: self.scroll.yview_moveto(1.0))
+        self.to_bottom()
 
     def _steps_card(self, steps):
         """A collapsible card listing what the agent did ("Executou 3 ações"), like Claude's tool cards."""
@@ -1216,7 +1239,7 @@ class App(tk.Tk):
         pill.create_window(58, 27, window=self.status_label, anchor="w")
         pill.pack(side="left")
         self.thinking = row
-        self.after(60, lambda: self.scroll.yview_moveto(1.0))
+        self.to_bottom()
         self.typing = True
         my = self.turn
         proj = self.project
