@@ -693,17 +693,21 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         if not self.whatsapp.connected():
             return f"O WhatsApp ainda não está conectado, {sir}, então não consigo ver as conversas. Conecte-o no menu lateral, em Conexões."
         try:
-            chats = self.whatsapp.unread(self.on_status)
+            res = self.whatsapp.unread(self.on_status)
         except wa_mod.NotConnected:
             return f"A sessão do WhatsApp expirou, {sir}. Conecte-o de novo em Conexões."
         except Exception as e:
             return f"Não consegui ler o WhatsApp agora, {sir}: {str(e)[:160]}"
-        if not chats:
+        chats = res["chats"] if isinstance(res, dict) else res
+        total = res["total"] if isinstance(res, dict) else len(chats)
+        if not total and not chats:
             return f"Nenhuma conversa não lida no WhatsApp, {sir}."
-        total = sum(c["count"] for c in chats)
+        msgs = sum(c["count"] for c in chats)
         names = ", ".join(f"{c['title']} ({c['count']})" if c["count"] > 1 else c["title"] for c in chats[:8])
         more = f" e mais {len(chats) - 8}" if len(chats) > 8 else ""
-        return f"O senhor tem {len(chats)} conversa{'s' if len(chats) != 1 else ''} não lida{'s' if len(chats) != 1 else ''} no WhatsApp ({total} {'mensagem' if total == 1 else 'mensagens'}): {names}{more}."
+        who = f": {names}{more}" if names else ""
+        counted = f" ({msgs} {'mensagem' if msgs == 1 else 'mensagens'})" if chats else ""
+        return f"O senhor tem {total} conversa{'s' if total != 1 else ''} não lida{'s' if total != 1 else ''} no WhatsApp{counted}{who}."
 
     def whatsapp_send(self, goal, d):
         """Sends a message and/or a screenshot (all of a screen, or just the part described) to a WhatsApp contact, after the user confirms."""

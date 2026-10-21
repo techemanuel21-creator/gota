@@ -220,22 +220,34 @@ class WhatsApp:
 
     _UNREAD_JS = """
     () => {
+      // the filter chip ("Não lidas 1") carries the real number of unread chats: it is the reference
+      const chipEl = [...document.querySelectorAll('button,[role="button"]')].find(b => /^(não lidas|nao lidas|unread)/i.test((b.innerText || '').trim()));
+      let chip = null;
+      if (chipEl) { const m = (chipEl.innerText || '').match(/(\\d+)\\s*$/); chip = m ? parseInt(m[1]) : null; }
       const seen = new Map();
       const rows = document.querySelectorAll('#pane-side [role="listitem"], #pane-side [role="row"], #pane-side [data-testid="cell-frame-container"]');
       rows.forEach(row => {
-        const badge = row.querySelector('[aria-label*="não lida"], [aria-label*="nao lida"], [aria-label*="unread"], [data-testid="icon-unread-count"]');
-        if (!badge) return;
         const title = (row.querySelector('span[title]') || {}).title || '';
-        const m = ((badge.getAttribute('aria-label') || badge.innerText || '') + '').match(/\\d+/);
-        if (title && !seen.has(title)) seen.set(title, m ? parseInt(m[0]) : 1);
+        if (!title) return;
+        const box = row.getBoundingClientRect();
+        let count = 0;   // the green bubble: a small element on the right whose text is only digits (the time has ":" so it never matches)
+        row.querySelectorAll('span,div').forEach(el => {
+          if (el.children.length) return;
+          const tx = (el.textContent || '').trim();
+          if (!/^\\d{1,4}$/.test(tx)) return;
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.width < 64 && r.left > box.left + box.width * 0.6) count = Math.max(count, parseInt(tx));
+        });
+        const flagged = !!row.querySelector('[aria-label*="não lida"], [aria-label*="nao lida"], [aria-label*="unread"]');
+        if (!seen.has(title)) seen.set(title, {title, count, flagged});
       });
-      return [...seen.entries()].map(([title, count]) => ({title, count}));
+      return {chip, filtered: !!(chipEl && (chipEl.getAttribute('aria-pressed') === 'true' || chipEl.getAttribute('aria-selected') === 'true')), rows: [...seen.values()]};
     }
     """
 
     def unread(self, on_status=lambda s: None):
-        """The chats with unread messages, read from the connected WhatsApp Web: [{title, count}] (newest first as the list shows them).
-        Uses the "Não lidas" filter when the page has it, so chats below the visible part of the list are counted too."""
+        """What the connected WhatsApp Web shows as unread: {"total": chats, "chats": [{title, count}], "via": "filtro"|"lista"}.
+        The "Não lidas" chip's own number is the reference for how many chats; the list gives who and how many messages each."""
         from playwright.sync_api import sync_playwright
         if not self.connected():
             raise NotConnected()
@@ -251,27 +263,41 @@ class WhatsApp:
                     raise NotConnected()
                 if state != "ready":
                     raise RuntimeError("O WhatsApp Web não carregou a tempo.")
-                time.sleep(2)
+                time.sleep(2.5)
                 self._dismiss_popups(page)
                 on_status("Lendo as conversas não lidas…")
-                try:   # the filter chip shows only the unread chats
-                    page.locator('button:has-text("Não lidas"), [role="button"]:has-text("Não lidas"), button:has-text("Unread"), [role="button"]:has-text("Unread")').first.click(timeout=3000)
-                    time.sleep(1.2)
-                except Exception:
-                    pass
-                found = {}
-                for _ in range(6):   # scroll the list so rows below the visible part are read too
-                    for r in page.evaluate(self._UNREAD_JS):
-                        found.setdefault(r["title"], r["count"])
+                first = page.evaluate(self._UNREAD_JS)
+                filtered = False
+                if first.get("chip") is not None or first.get("filtered"):
+                    try:   # the chip filters the list down to the unread chats
+                        page.locator('button:has-text("Não lidas"), [role="button"]:has-text("Não lidas"), button:has-text("Unread"), [role="button"]:has-text("Unread")').first.click(timeout=3000)
+                        time.sleep(1.3)
+                        filtered = True
+                    except Exception:
+                        pass
+                found, chip = {}, first.get("chip")
+                for i in range(8):   # scroll the list so rows below the visible part are read too
+                    snap = page.evaluate(self._UNREAD_JS)
+                    chip = snap.get("chip") if snap.get("chip") is not None else chip
+                    for r in snap["rows"]:
+                        found.setdefault(r["title"], r)
+                    before = len(found)
                     try:
-                        before = len(found)
                         page.evaluate("() => { const p = document.querySelector('#pane-side'); if (p) p.scrollBy(0, p.clientHeight * 0.9); }")
-                        time.sleep(0.5)
-                        if before == len(found) and _ >= 1:
-                            break
                     except Exception:
                         break
-                return [{"title": k, "count": v} for k, v in found.items()]
+                    time.sleep(0.5)
+                    if i >= 1 and len(page.evaluate(self._UNREAD_JS)["rows"]) and before == len(found):
+                        break
+                rows = list(found.values())
+                chats = [{"title": r["title"], "count": r["count"] or 1} for r in rows if (filtered or r["count"] or r["flagged"])]
+                total = chip if chip is not None else len(chats)
+                try:   # what was read, for checking afterwards when a number looks wrong
+                    import json as _json
+                    (PROFILE.parent / "whatsapp_unread_debug.json").write_text(_json.dumps({"chip": chip, "filtered": filtered, "rows": rows}, ensure_ascii=False, indent=1), "utf-8")
+                except Exception:
+                    pass
+                return {"total": total, "chats": chats, "via": "filtro" if filtered else "lista"}
             finally:
                 ctx.close()
 

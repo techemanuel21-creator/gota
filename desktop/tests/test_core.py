@@ -802,15 +802,23 @@ class WhatsappUnread(unittest.TestCase):
         except ImportError:
             self.skipTest("playwright não instalado")
         from gota import whatsapp
-        html = """<div id="pane-side"><div role="listitem"><span title="Maria">Maria</span><span aria-label="3 mensagens não lidas">3</span></div>
-<div role="listitem"><span title="João">João</span></div><div role="listitem"><span title="Pedro">Pedro</span><span aria-label="1 mensagem não lida">1</span></div></div>"""
+        # mirrors a real list: the chip shows how many chats are unread, only one row has the green number, times contain ":", phone numbers are titles
+        row = lambda title, time_, badge="", extra="": (f'<div role="listitem" style="display:flex;width:500px;height:60px;justify-content:space-between"><span title="{title}">{title}</span>'
+                                                       f'<span style="display:flex;flex-direction:column"><span>{time_}</span>{badge}</span>{extra}</div>')
+        html = ('<button aria-pressed="false">Tudo</button><button>Não lidas 1</button><div id="pane-side">'
+                + row("Meu Numero", "17:40") + row("T2W | PLANTONISTA", "16:33", '<span style="width:20px;display:inline-block">2</span>')
+                + row("+55 11 99630-9400", "14:37", extra='<span aria-label="Mensagem enviada">ok</span>') + row("Tech2Work", "15:26") + "</div>")
         with sync_playwright() as pw:
             browser = pw.chromium.launch(channel="msedge", headless=True)
             page = browser.new_page()
             page.set_content(html)
-            found = page.evaluate(whatsapp.WhatsApp._UNREAD_JS)
+            res = page.evaluate(whatsapp.WhatsApp._UNREAD_JS)
             browser.close()
-        self.assertEqual({(f["title"], f["count"]) for f in found}, {("Maria", 3), ("Pedro", 1)})
+        self.assertEqual(res["chip"], 1)
+        counts = {r["title"]: r["count"] for r in res["rows"]}
+        self.assertEqual(counts["T2W | PLANTONISTA"], 2)
+        self.assertEqual(counts["+55 11 99630-9400"], 0)           # digits in a phone-number title are not a badge
+        self.assertEqual(counts["Meu Numero"], 0)                   # "17:40" is a time, not a badge
 
 class MassiveContext(unittest.TestCase):
     def setUp(self):
