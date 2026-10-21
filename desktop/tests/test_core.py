@@ -952,6 +952,71 @@ class GlitchCleaning(unittest.TestCase):
         b.stream_to_ui()('{"action":"reply","text":"' + self.BAD + '"}')
         self.assertTrue(seen and "|" not in seen[-1])
 
+class UiBehaviours(unittest.TestCase):
+    def test_long_user_message_is_folded_with_ler_mais(self):
+        import tkinter as tk
+        from gota import widgets
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            long_text = "\n".join(f"linha {i} do pedido de configuração" for i in range(20))
+            card = widgets.bubble(root, long_text, True, 600)
+            root.update()
+            labels = lambda: [w.cget("text") for w in card.winfo_children()[0].winfo_children() if isinstance(w, tk.Label)]
+            self.assertIn("Ler mais  ▾", labels())
+            texts = lambda: "".join(w.get("1.0", "end") for w in card.winfo_children()[0].winfo_children() if isinstance(w, tk.Text))
+            self.assertNotIn("linha 19", texts())                 # only a preview
+            folded_h = card.winfo_reqheight()
+            card.toggle()                                         # what a click on "Ler mais" does
+            root.update()
+            self.assertIn("linha 19", texts())                    # expanded: the whole message
+            self.assertIn("Ler menos  ▴", labels())
+            self.assertGreater(card.winfo_reqheight(), folded_h)
+            short = widgets.bubble(root, "oi, tudo bem?", True, 600)
+            self.assertFalse([w for w in short.winfo_children()[0].winfo_children() if isinstance(w, tk.Label)])   # short messages have no button
+            ai = widgets.bubble(root, long_text, False, 600)                                                       # only the user's messages fold
+            self.assertFalse([w for w in ai.winfo_children()[0].winfo_children() if isinstance(w, tk.Label)])
+        finally:
+            root.destroy()
+
+    def test_dragging_a_maximized_window_restores_it_under_the_cursor(self):
+        import tkinter as tk
+        from gota import chrome
+        root = tk.Tk()
+        root.geometry("900x600+100+80")
+        root.update()
+        try:
+            ch = chrome.Chrome(root, "t", None, dict(bg="#000", bar="#111", muted="#888", text="#fff", hover="#222"))
+            root.update()
+            ch.toggle_max()
+            root.update()
+            self.assertTrue(ch.maximized)
+            ev = lambda x, y: type("E", (), {"x_root": x, "y_root": y})()
+            ch._start_drag(ev(600, 20))
+            ch._drag(ev(640, 60))
+            root.update()
+            self.assertFalse(ch.maximized)                          # grabbed the bar of a maximized window: it comes back to size
+            self.assertTrue(root.geometry().startswith("900x600"))
+            self.assertLess(abs(root.winfo_x() - (640 - ch._frac * 900)), 3)   # and sits under the cursor
+        finally:
+            root.destroy()
+
+    def test_right_click_menu_offers_cut_copy_paste_select_all(self):
+        import tkinter as tk
+        from unittest import mock
+        from gota import app
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            entry = tk.Entry(root)
+            entry.insert(0, "texto")
+            entered = []
+            with mock.patch.object(tk.Menu, "tk_popup", lambda self, x, y: entered.extend(self.entrycget(i, "label") for i in range(self.index("end") + 1) if self.type(i) != "separator")):
+                app.App._edit_menu(root, type("E", (), {"widget": entry, "x_root": 5, "y_root": 5})())
+            self.assertEqual(entered, ["Cortar", "Copiar", "Colar", "Selecionar tudo"])
+        finally:
+            root.destroy()
+
 if __name__ == "__main__":
     unittest.main()
 

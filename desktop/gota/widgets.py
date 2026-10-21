@@ -266,6 +266,7 @@ def _selectable(widget, root):
     widget.bind("<<Cut>>", lambda e: "break")
     widget.bind("<Button-1>", lambda e: widget.focus_set(), add="+")
     widget.bind("<Control-a>", lambda e: (widget.tag_add("sel", "1.0", "end-1c"), "break")[1])
+    widget._has_menu = True
     menu = tk.Menu(widget, tearoff=0, bg=SURFACE2, fg=TEXT, activebackground=PRIMARY, bd=0)
 
     def copy(all_text=False):
@@ -540,29 +541,55 @@ class ChatInput(tk.Canvas):
         self.text.focus_set()
 
 
+COLLAPSE_LINES, COLLAPSE_CHARS = 8, 700   # a user message longer than this shows a preview and a "Ler mais" button
+
+
+def _preview(text, lines=6, chars=420):
+    """The first lines of a long message, cut at a word, with an ellipsis."""
+    head = "\n".join(text.split("\n")[:lines])
+    if len(head) > chars:
+        head = head[:chars].rsplit(" ", 1)[0]
+    return head.rstrip() + " …"
+
+
 def bubble(parent, text, mine, maxw=560):
-    """A chat card: rounded, sized to its content; the text is selectable and ``` blocks become separate code boxes with a Copy button."""
-    plain = False   # both sides are cards now: the user's a little brighter, the assistant's a subtle one with a thin border
+    """A chat card: rounded, sized to its content; the text is selectable and ``` blocks become separate code boxes with a Copy button.
+    A long message of the user is shown as a preview with a "Ler mais" button that expands it (and "Ler menos" folds it back)."""
     pad_x, pad_y, r = (16, 12, 18)
     bg = SURFACE2 if mine else SURFACE
     root = parent.winfo_toplevel()
     c = tk.Canvas(parent, bg=BG, highlightthickness=0, bd=0)
     frame = tk.Frame(c, bg=bg)
-    blocks = split_blocks(text)
     inner = maxw - 2 * pad_x
     f = tkfont.Font(font=FONT)
-    if any(b[0] == "code" for b in blocks):
-        width = inner
-    else:   # a short message gets a snug bubble
-        width = min(inner, max(f.measure(line) for line in text.split("\n")) + 8)
-    for i, b in enumerate(blocks):
-        if b[0] == "text":
-            w = _prose(frame, b[1], FONT, bg, width, root)
-        else:
-            w = _code_block(frame, b[1], b[2], root, width)
-        w.pack(fill="x", pady=(0 if i == 0 else 8, 0))
-    win = c.create_window(pad_x, pad_y, window=frame, anchor="nw")
+    long = mine and (text.count("\n") + 1 > COLLAPSE_LINES or len(text) > COLLAPSE_CHARS)
+    view = {"open": not long}
     state = {"shape": None}
+
+    def toggle():
+        view["open"] = not view["open"]
+        build()
+    c.toggle = toggle
+
+    def build():
+        for w in frame.winfo_children():
+            w.destroy()
+        shown = text if view["open"] else _preview(text)
+        blocks = split_blocks(shown)
+        if long or any(b[0] == "code" for b in blocks):
+            width = inner
+        else:   # a short message gets a snug bubble
+            width = min(inner, max(f.measure(line) for line in shown.split("\n")) + 8)
+        for i, blk in enumerate(blocks):
+            w = _prose(frame, blk[1], FONT, bg, width, root) if blk[0] == "text" else _code_block(frame, blk[1], blk[2], root, width)
+            w.pack(fill="x", pady=(0 if i == 0 else 8, 0))
+        if long:
+            more = tk.Label(frame, text="Ler menos  ▴" if view["open"] else "Ler mais  ▾", bg=bg, fg=ACCENT, font=("Segoe UI", 10, "bold"), cursor="hand2", anchor="w")
+            more.pack(fill="x", pady=(8, 0))
+            more.bind("<Button-1>", lambda e: toggle())
+        layout()
+
+    win = c.create_window(pad_x, pad_y, window=frame, anchor="nw")
 
     def layout(_=None):
         frame.update_idletasks()
@@ -573,7 +600,7 @@ def bubble(parent, text, mine, maxw=560):
         state["shape"] = rounded(c, 0, 0, w - 1, h - 1, r, fill=bg, outline="" if mine else CARD_BORDER)
         c.tag_lower(state["shape"])
     frame.bind("<Configure>", layout)
-    layout()
+    build()
     return c
 
 

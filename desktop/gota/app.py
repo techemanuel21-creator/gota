@@ -55,6 +55,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Gota Local Assistant")
+        self.bind_class("Text", "<Button-3>", self._edit_menu, add="+")    # right click anywhere you type: Cortar, Copiar, Colar, Selecionar tudo
+        self.bind_class("Entry", "<Button-3>", self._edit_menu, add="+")
         try:   # the Gota cat as the window / taskbar icon (the packaged exe carries the same icon)
             self._icon = ImageTk.PhotoImage(Image.open(sprites().dir / "logo.png").convert("RGBA").resize((64, 64), Image.NEAREST))
             self.iconphoto(True, self._icon)
@@ -249,6 +251,25 @@ class App(tk.Tk):
         self.ui(show)
         done.wait(180)
         return result["ok"]
+
+    def _edit_menu(self, e):
+        w = e.widget
+        if getattr(w, "_has_menu", False) or str(w.cget("state")) == "disabled":   # read-only chat text has its own copy menu
+            return
+        w.focus_set()
+        menu = tk.Menu(w, tearoff=0, bg=SURFACE2, fg=TEXT, activebackground=PRIMARY, activeforeground=TEXT, bd=0, font=("Segoe UI", 10))
+        has_sel = False
+        try:
+            has_sel = bool(w.selection_present()) if isinstance(w, tk.Entry) else bool(w.tag_ranges("sel"))
+        except tk.TclError:
+            pass
+        menu.add_command(label="Cortar", command=lambda: w.event_generate("<<Cut>>"), state="normal" if has_sel else "disabled")
+        menu.add_command(label="Copiar", command=lambda: w.event_generate("<<Copy>>"), state="normal" if has_sel else "disabled")
+        menu.add_command(label="Colar", command=lambda: w.event_generate("<<Paste>>"))
+        menu.add_separator()
+        menu.add_command(label="Selecionar tudo", command=lambda: (w.select_range(0, "end") if isinstance(w, tk.Entry) else w.tag_add("sel", "1.0", "end-1c")))
+        menu.tk_popup(e.x_root, e.y_root)
+        return "break"
 
     def followup(self, chat_id, text):
         """A message from Gota that arrives on its own after the answer (for example the model's check of an instant script)."""

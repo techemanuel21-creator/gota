@@ -1,5 +1,5 @@
 """A frameless window with its own title bar: rounded corners (Windows 11), taskbar button, drag, resize, min/max/close."""
-import ctypes, tkinter as tk
+import re, ctypes, tkinter as tk
 from pathlib import Path
 from ctypes import wintypes
 
@@ -107,6 +107,7 @@ class Chrome:
         for w in (bar, self.icon, self.title):
             w.bind("<ButtonPress-1>", self._start_drag)
             w.bind("<B1-Motion>", self._drag)
+            w.bind("<ButtonRelease-1>", self._end_drag)
             w.bind("<Double-Button-1>", lambda e: self.toggle_max())
         self.body = tk.Frame(self.shell, bg=colors["bg"])
         self.body.pack(fill="both", expand=True)
@@ -116,11 +117,31 @@ class Chrome:
     # ------------------------------------------------------------------ move / resize
     def _start_drag(self, e):
         self._off = (e.x_root - self.win.winfo_x(), e.y_root - self.win.winfo_y())
+        self._press = (e.x_root, e.y_root)
+        self._frac = (e.x_root - self.win.winfo_x()) / max(1, self.win.winfo_width())   # where along the bar the user grabbed it (for restoring under the cursor)
+
+    def _restored_size(self):
+        m = re.match(r"(\d+)x(\d+)", getattr(self, "restore", "") or "")
+        return (int(m.group(1)), int(m.group(2))) if m else (1100, 740)
 
     def _drag(self, e):
         if self.maximized:
+            if abs(e.x_root - self._press[0]) + abs(e.y_root - self._press[1]) < 6:
+                return   # a click, not a drag
+            w, h = self._restored_size()   # like Windows: grabbing the bar of a maximized window brings it back to size under the cursor and drags it
+            x, y = int(e.x_root - self._frac * w), max(0, e.y_root - 20)
+            self.win.geometry(f"{w}x{h}+{x}+{y}")
+            self.max_btn.configure(text="☐")
+            self.maximized = False
+            self._off = (e.x_root - x, e.y_root - y)
             return
         self.win.geometry(f"+{e.x_root - self._off[0]}+{e.y_root - self._off[1]}")
+        self._snap = e.y_root <= work_area(self.win)[1] + 2   # the cursor is at the top edge of the screen
+
+    def _end_drag(self, e):
+        if getattr(self, "_snap", False) and not self.maximized:
+            self.toggle_max()   # dropped on the top edge: maximize (as Windows does)
+        self._snap = False
 
     def _grips(self):
         for side, cursor, where in (("e", "sb_h_double_arrow", dict(relx=1.0, rely=0, relheight=1.0, width=5, anchor="ne", y=40)),
