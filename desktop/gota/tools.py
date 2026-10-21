@@ -1,4 +1,5 @@
 """What Gota can do on the computer: search the web, weather, open apps, timers and the calendar."""
+import time
 import base64, html, json, os, re, subprocess, threading, time, unicodedata, urllib.parse, urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,12 +20,20 @@ def http(url, timeout=8, limit=600_000, headers=None) -> bytes:
         return r.read(limit)
 
 
+_ONLINE = {"t": 0.0, "v": False}
+
+
 def is_online() -> bool:
+    """Whether the internet answers (remembered for 20 seconds, so a single question does not pay for the check several times)."""
+    if time.time() - _ONLINE["t"] < 20:
+        return _ONLINE["v"]
     try:
         http("https://www.bing.com/robots.txt", timeout=4, limit=200)
-        return True
+        _ONLINE["v"] = True
     except Exception:
-        return False
+        _ONLINE["v"] = False
+    _ONLINE["t"] = time.time()
+    return _ONLINE["v"]
 
 
 # ---------------------------------------------------------------- web search (Bing, free)

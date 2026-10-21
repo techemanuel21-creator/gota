@@ -153,6 +153,9 @@ class Speaker:
 
     def __init__(self):
         self.q = queue.Queue()
+        self.on_state = None   # on_state(True/False): the voice started / stopped playing (the cat's mouth follows it)
+        self.speaking = False
+        self.rendering = 0
         self.male = False
         self.ready = threading.Event()
         self.generation = 0
@@ -215,6 +218,15 @@ class Speaker:
 
     english = True   # read English phrases with English sounds (the same voice); can be switched off in the Voz e microfone window
 
+    def _state(self, on):
+        if on != self.speaking:
+            self.speaking = on
+            if self.on_state:
+                try:
+                    self.on_state(on)
+                except Exception:
+                    pass
+
     def _render(self, piper, text, np):
         """The audio for `text` in the SAME voice: English phrases are phonemized as English (espeak en-us) and spoken by the Portuguese voice, whose
         phoneme set covers them. A short pause separates them from the Portuguese around them."""
@@ -254,24 +266,60 @@ class Speaker:
                     pass
             threading.Thread(target=load_en, daemon=True).start()
         self.ready.set()
+        if piper:
+            try:   # the first synthesis is slower (the engine warms up): do it now, not on the first answer
+                self._render(piper, "ok", np)
+            except Exception:
+                pass
+            self.pq = queue.Queue()
+            threading.Thread(target=self._play_loop, args=(piper,), daemon=True).start()
         while True:
             text, done, gen = self.q.get()
+            if piper:
+                # synthesis runs one sentence ahead of the playback, so there is no pause between sentences
+                audio = None
+                self.rendering += 1
+                try:
+                    if gen == self.generation and text:
+                        audio = self._render(piper, text, np)
+                except Exception:
+                    audio = None
+                finally:
+                    self.pq.put((audio, done, gen))
+                    self.rendering -= 1
+                continue
             try:
-                if gen != self.generation or not text:   # an empty line only marks 'everything before me has been played'
-                    continue
-                if piper:
-                    audio = self._render(piper, text, np)
-                    if gen == self.generation:
-                        sd.play(audio, piper.config.sample_rate)
-                        while sd.get_stream().active and gen == self.generation:
-                            time.sleep(0.05)
-                        sd.stop()
-                else:
+                if gen == self.generation and text:
+                    self._state(True)
                     sapi.say(f'<pitch absmiddle="-8">{xml_escape(text)}</pitch>')
                     sapi.runAndWait()
             except Exception:
                 pass
             finally:
+                if self.q.empty():
+                    self._state(False)
+                if done and gen == self.generation:
+                    try:
+                        done()
+                    except Exception:
+                        pass
+
+    def _play_loop(self, piper):
+        import sounddevice as sd
+        while True:
+            audio, done, gen = self.pq.get()
+            try:
+                if audio is not None and gen == self.generation:
+                    self._state(True)
+                    sd.play(audio, piper.config.sample_rate)
+                    while sd.get_stream().active and gen == self.generation:
+                        time.sleep(0.03)
+                    sd.stop()
+            except Exception:
+                pass
+            finally:
+                if self.pq.empty() and self.q.empty() and not self.rendering:
+                    self._state(False)   # nothing more to say: the cat closes its mouth
                 if done and gen == self.generation:
                     try:
                         done()
@@ -281,6 +329,7 @@ class Speaker:
     def speak(self, text, done=None):
         import re
         clean = re.sub(r"```.*?(```|\Z)", " (o comando está no chat) ", text, flags=re.S)   # code is never read aloud
+        clean = spoken_form(clean)   # JOB_BACKUP_TAPE_NOD01_B -> "job, backup, tape, nod zero um, bê" (before the underscores are dropped below)
         clean = re.sub(r"[*_#`>]", "", clean)
         clean = re.sub(r"[𐀀-􏿿☀-➿]", "", clean).strip()
         if not clean:
@@ -296,6 +345,7 @@ class Speaker:
     def stop(self):
         """Cuts the speech short: pending lines are dropped and the one playing is silenced."""
         self.generation += 1
+        self._state(False)
         try:
             import sounddevice as sd
             sd.stop()
@@ -484,10 +534,7 @@ class Listener:
                         x = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x.astype(np.float32)).astype(np.int16)
                     q.put(x.tobytes())
                 try:
-                    stream = sd.RawInputStream(samplerate=rate, blocksize=int(rate * 0.2), dtype="int16", channels=channels, device=idx, callback=cb)
-                    stream.start()
-                    stream.stop()   # opened fine; the caller starts it through the context manager
-                    return stream
+                    return sd.RawInputStream(samplerate=rate, blocksize=int(rate * 0.2), dtype="int16", channels=channels, device=idx, callback=cb)
                 except Exception as e:
                     last = e
             if idx is None:
@@ -515,7 +562,7 @@ class Listener:
                     "se preferir, escolha o certo em Microfone, no menu lateral, ou confira o volume em Configurações > Sistema > Som.")
         return f"Captei som em \"{self.device_name}\" mas não entendi nenhuma palavra. Fale um pouco mais perto e devagar."
 
-    WHISPER_SIZE = "small"
+    WHISPER_SIZE = "base"      # ~0.9 s per sentence on this CPU (small took 3-4 s); small is still used while base is not downloaded
     VOCAB = "Gota, Veeam, Windows, Linux, tela, cibersegurança, infraestrutura, backup, servidor, PowerShell, firewall, Active Directory."
 
     whisper_downloading = False
@@ -523,17 +570,23 @@ class Listener:
     def _whisper_dir(self):
         """Folder of the downloaded Whisper model, or None while it is not on this computer yet."""
         root = MODELS / "whisper"
-        for d in root.glob(f"models--*whisper-{self.WHISPER_SIZE}*/snapshots/*"):
-            if (d / "model.bin").exists():
-                return d
+        for size in (self.WHISPER_SIZE, "small"):
+            for d in root.glob(f"models--*whisper-{size}*/snapshots/*"):
+                if (d / "model.bin").exists():
+                    return d
         return None
 
     def whisper_ready(self):
         return self._whisper_dir() is not None
 
+    def whisper_best(self):
+        """True once the preferred (fast) Whisper model is the one on disk."""
+        d = self._whisper_dir()
+        return d is not None and f"whisper-{self.WHISPER_SIZE}" in str(d)
+
     def download_whisper(self):
         """Fetches the Whisper model in the background (about 480 MB, once). Until it is here, Vosk's text is used."""
-        if self.whisper_downloading or self.whisper_ready():
+        if self.whisper_downloading or self.whisper_best():
             return
         self.whisper_downloading = True
 
@@ -565,7 +618,7 @@ class Listener:
             return fallback
         try:
             x = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
-            segs, _ = self.whisper().transcribe(x, language="pt", beam_size=5, vad_filter=True, initial_prompt=self.VOCAB, condition_on_previous_text=False)
+            segs, _ = self.whisper().transcribe(x, language="pt", beam_size=1, vad_filter=True, initial_prompt=self.VOCAB, condition_on_previous_text=False)
             text = " ".join(s.text.strip() for s in segs).strip()
             if text and not text.lower().startswith(self.VOCAB[:12].lower()):
                 return text

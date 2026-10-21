@@ -1,5 +1,5 @@
 """Visual pieces: palette, the animated cat, rounded buttons, pill-shaped input, chat bubbles and a switch."""
-import json, re, tkinter as tk
+import json, weakref, re, tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from PIL import Image, ImageTk
@@ -61,15 +61,43 @@ def sprites():
     return _SPRITES
 
 
+_CATS = weakref.WeakSet()
+_SPEAKING = {"on": False}
+
+
+def set_speaking(on):
+    """Called (on the UI thread) when the voice starts or stops playing: every talking cat opens or closes its mouth accordingly."""
+    _SPEAKING["on"] = bool(on)
+    for cat in list(_CATS):
+        try:
+            cat.refresh()
+        except Exception:
+            pass
+
+
 class CatView(tk.Label):
     """A label that plays one of the cat's animations (idle, listen, read, paint, talk, phone_*)."""
 
     def __init__(self, parent, size=96, bg=BG, **kw):
         super().__init__(parent, bg=bg, bd=0, highlightthickness=0, **kw)
-        self.size, self.bgc, self.name, self.job = size, bg, None, None
+        self.size, self.bgc, self.name, self.job, self.want = size, bg, None, None, None
+        _CATS.add(self)
         self.play("anim_cat_idle")
 
+    @staticmethod
+    def _real(name):
+        """The talking animations only run while the voice is playing; otherwise the cat keeps its mouth closed and just blinks."""
+        if name in ("anim_cat_talk", "anim_phone_talk") and not _SPEAKING["on"]:
+            return name.replace("talk", "idle")
+        return name
+
+    def refresh(self):
+        if self.want and self.winfo_exists():
+            self.play(self.want)
+
     def play(self, name):
+        self.want = name
+        name = self._real(name)
         if name == self.name:
             return
         self.name = name

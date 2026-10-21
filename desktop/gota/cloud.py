@@ -205,6 +205,10 @@ class Hybrid:
             self._cloud = OpenRouter(key, model)
         return self._cloud
 
+    def cloud_ready(self):
+        """True when the next request will go to the cloud model (key set, switched on, and it did not fail a moment ago)."""
+        return self._client() is not None
+
     def _try(self, call, local_call):
         c = self._client()
         if c is not None:

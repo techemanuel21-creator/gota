@@ -234,12 +234,20 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         now = datetime.now()
         where = f" · Local: {loc['city']}" if loc and loc.get("city") else ""
         screens = tools.screens_note(self.screen_nicks())   # which screens exist and where the cursor is (empty with a single screen)
-        extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, símbolos nem links" if spoken else "")
+        extra = (" · " + screens if screens else "") + (" · RESPOSTA FALADA: fale natural e corrido, sem listas, emojis, símbolos nem links; a pergunta veio de reconhecimento de voz e pode ter erros em nomes técnicos (Veeam, Hyper-V...): entenda pelo contexto" if spoken else "")
         user_text = f"[Agora: {WEEKDAYS[now.weekday()]}, {now:%d/%m/%Y %H:%M}{where}{extra}]\n" + (goal or "O que você vê nesta imagem?")
         turns = [(r, t if r == "user" else json.dumps({"action": "reply", "text": t}, ensure_ascii=False)) for r, t in history if t.strip()]
         try:
             # first pass without the slow "thinking" mode: it is enough to decide what to do (look at the screen, search, answer...)
             will_override = image is None and tools.is_online() and bool(self.is_question(goal, lower)) and not self.is_command(lower) and (self.needs_fresh(lower) or bool(TECH_WORDS.search(lower)))
+            self._fast = False
+            if will_override and not self.needs_fresh(lower) and getattr(llm, "cloud_ready", lambda: False)():
+                # the cloud model already knows IT: one call, with our notes attached, instead of "ask, discard, search the internet, ask again"
+                self._fast, will_override = True, False
+                material = self.quick_material(goal)
+                if material:
+                    user_text += "\n[MATERIAL DA BASE (use se ajudar; ignore se não tiver relação)]\n" + material
+                user_text += "\n[Responda direto com action reply, sem ask_expert: você já sabe responder perguntas de TI]"
             raw = llm.chat(chat_id, self.system_prompt(), turns, user_text, image, False, on_delta=None if will_override else self.stream_to_ui())
         except Exception as e:
             return f"Perdão, {sir}, tive um problema ao pensar: {e}", None
@@ -284,7 +292,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             if image is None and asked and tools.is_online():  # safety nets: facts that change, and IT answers that should come from the knowledge base
                 if self.needs_fresh(lower) and not self.is_command(lower):
                     return self.search(goal, self.with_location(goal, search_query(goal)))
-                if TECH_WORDS.search(lower) and not self.is_command(lower):
+                if TECH_WORDS.search(lower) and not self.is_command(lower) and not getattr(self, "_fast", False):
                     return self.expert_answer(goal, spoken=self.spoken), None
             if image is None and asked and any(n in norm(text) for n in NON_ANSWERS) and tools.is_online():
                 if TECH_WORDS.search(lower) or not self.needs_fresh(lower):   # it does not know: learn the documentation and answer from it
@@ -400,6 +408,17 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
 - Em temas de segurança ofensiva, ajude apenas em contexto autorizado e defensivo.
 - Cite a fonte pelo nome entre parênteses no final (fonte: ...). Responda em texto simples."""
 
+    def quick_material(self, goal):
+        """The best notes and skill for a question, ready to attach to it (local lookup only: no internet, no extra model call)."""
+        hits = kb.search(goal, 3)
+        skill_hits = [h for h in skills_mod.search(goal, 2) if not h[1]["name"].startswith("desenvolver")][:1]
+        parts = []
+        if skill_hits:
+            parts.append(skills_mod.prompt_block(skill_hits, 1400))
+        if hits and kb.good_enough(hits, goal):
+            parts.append("\n\n".join(f"[{t}]\n{txt[:900]}" for _, t, _src, txt in hits[:1]))
+        return "\n\n".join(parts)[:2400]
+
     def expert_answer(self, goal, spoken=False, image=None, query=None):
         """Answers IT questions from the knowledge base; when it has nothing good it learns from the internet first."""
         sir = self.p.sir()
@@ -408,18 +427,27 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         hits = kb.search(q, 4)
         skill_hits = [h for h in skills_mod.search(q, 3) if not h[1]["name"].startswith("desenvolver")][:2]
         learned = []
-        if not skill_hits and not kb.good_enough(hits, q) and tools.is_online() and tools.norm(q) not in self._tried:   # one attempt per subject per session
+        fast = getattr(llm, "cloud_ready", lambda: False)()   # the cloud model knows IT: no need to download documentation first
+        if not skill_hits and not fast and not kb.good_enough(hits, q) and tools.is_online() and tools.norm(q) not in self._tried:   # one attempt per subject per session
             self._tried[tools.norm(q)] = time.time()
             self.on_phase("searching")
             learned = self.learn_topic(q)
             hits = kb.search(q, 4)
-        if (not hits or hits[0][0] < 4.5) and not skill_hits and llm is not None and len(kb.listing()) > 5:
+        if (not hits or hits[0][0] < 4.5) and not skill_hits and not fast and llm is not None and len(kb.listing()) > 5:
             # weak match: the notes (often English documentation) may use other words than the question; search again with its English keywords
             try:
                 terms = str(llm.one_shot("Traduza para inglês técnico as palavras-chave desta pergunta (no máximo 8 palavras, separadas por espaço, sem frases).", q)).strip().splitlines()[0][:120]
                 alt = kb.search(q + " " + terms, 4)
                 if alt and (not hits or alt[0][0] > hits[0][0]):
                     hits = alt
+            except Exception:
+                pass
+        if not hits and not skill_hits and fast:   # nothing in the notes: the cloud model answers from what it knows
+            try:
+                out = llm.one_shot(self.EXPERT.format(who=self.p.address(), sir=sir).replace("MATERIAL", "seu conhecimento") + ("\nSua resposta será falada em voz alta: sem listas nem símbolos." if spoken else ""),
+                                   f"PERGUNTA: {goal}", image, on_delta=self.stream_to_ui())
+                data = self.extract_json(out)
+                return ((data or {}).get("text") or out).strip()
             except Exception:
                 pass
         if not hits and not skill_hits:

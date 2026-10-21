@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 
 from . import agent as agent_mod, cloud as cloud_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
+from . import widgets as widgets_mod
 from .overlay import CatOverlay
 from .widgets import (ACCENT, BG, BORDER, COLORS, FONT, GREEN, GREEN_HOVER, HOVER, MUTED, PRIMARY, PRIMARY_HOVER, RED, SURFACE, SURFACE2, TEXT,
                       CatView, ChatInput, PillEntry, RoundButton, Toggle, bubble, lerp, rounded, sprites)
@@ -524,6 +525,7 @@ class App(tk.Tk):
         def work():
             try:
                 self.gemma = cloud_mod.Hybrid(llm.Gemma(path), self.settings)   # online: OpenRouter; offline (or on failure): Gemma
+                threading.Thread(target=self.get_speaker, daemon=True).start()   # load the voice now (it takes a few seconds)
                 self.ui(self.show_boot)
             except Exception as e:
                 self.ui(lambda: messagebox.showerror("Gota", f"Não consegui carregar o modelo:\n{e}", parent=self))
@@ -1311,6 +1313,7 @@ class App(tk.Tk):
         if self.speaker is None:
             self.speaker = voice.Speaker()
             self.speaker.english = self.settings.get("english_speech") is not False
+            self.speaker.on_state = lambda on: self.ui(widgets_mod.set_speaking, on)   # the cat's mouth moves only while the voice is playing
         return self.speaker
 
     def toggle_dictation(self):
@@ -1349,10 +1352,7 @@ class App(tk.Tk):
         self.voice_question = None
         self.set_activity("Ouvindo…")
         self.overlay.show(f"Pois não, {self.profile.sir()}?", "anim_cat_listen")
-        try:
-            winsound.Beep(880, 120)
-        except Exception:
-            pass
+        threading.Thread(target=lambda: winsound.Beep(880, 90), daemon=True).start()
         threading.Thread(target=self._voice_turn, daemon=True).start()
 
     def _voice_turn(self):
@@ -1364,7 +1364,7 @@ class App(tk.Tk):
                 bars = min(8, pk // 600)
                 self.ui(lambda: self.overlay.set(f"Ouvindo… 🎙 {'▮' * bars}{'▯' * (8 - bars)}"))
         try:
-            heard = self.listener.listen(lambda p: self.ui(lambda: self.overlay.set(f"“{p}”")), silence=1.3, timeout=8, on_level=level)
+            heard = self.listener.listen(lambda p: self.ui(lambda: self.overlay.set(f"“{p}”")), silence=0.9, timeout=8, on_level=level)
         except Exception as e:
             self.ui(lambda: self.overlay.set(f"Perdão, não consegui usar o microfone: {e}", "anim_cat_idle"))
             self.ui(self.overlay.hide_later, 4000)

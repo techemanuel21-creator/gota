@@ -406,6 +406,27 @@ class TestEnglishVoice(unittest.TestCase):
         f0 = parselmouth.praat.call(pitch, "Get quantile", 0, 0, 0.5, "Hertz")
         self.assertGreater(f0, 130)
 
+class TestCatMouth(unittest.TestCase):
+    def test_mouth_follows_the_voice(self):
+        import tkinter as tk
+        from gota import widgets
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            cat = widgets.CatView(root, size=32)
+            cat.play("anim_cat_talk")
+            self.assertEqual(cat.name, "anim_cat_idle")     # not speaking: mouth closed, only blinking
+            widgets.set_speaking(True)
+            self.assertEqual(cat.name, "anim_cat_talk")
+            widgets.set_speaking(False)
+            self.assertEqual(cat.name, "anim_cat_idle")
+            phone = widgets.CatView(root, size=32)
+            phone.play("anim_phone_talk")
+            self.assertEqual(phone.name, "anim_phone_idle")
+        finally:
+            widgets.set_speaking(False)
+            root.destroy()
+
 if __name__ == "__main__":
     unittest.main()
 
