@@ -732,42 +732,46 @@ class NetconfFastPath(unittest.TestCase):
         self.assertIsNone(netconf.try_answer("Trunk:\n5 e 6; A\nVlan acess 2\n6 a 8; B\n"))     # port 6 twice: ambiguous
         self.assertIsNone(netconf.try_answer("41; Link02\n42; Link01"))                          # no heading: which vlan/mode?
 
-class ValidateLater(unittest.TestCase):
-    def test_instant_draft_then_model_check(self):
-        import time
-        from gota import brain, netconf
-        sent = []
+class ValidateBeforeAnswer(unittest.TestCase):
+    FINAL = "Pois não.\n\n```cisco\nconfigure terminal\nend\n```\n- ok"
 
-        class Cloud:
-            def cloud_ready(self): return True
-            def one_shot(self, system, user, image=None, on_delta=None): return '{"ok": true}'
-        b = brain.Brain(store.Profile(), store.Settings(), lambda: Cloud(), images=None)
-        b.followup = lambda cid, text: sent.append(text)
-        reply, _ = b.run(NetconfFastPath.REQUEST, [], "t")
-        self.assertIn("```cisco", reply)                       # shown at once
-        for _ in range(50):
-            if sent:
-                break
-            time.sleep(0.05)
-        self.assertTrue(sent and sent[0].startswith("✓"))      # and checked afterwards
-
-    def test_a_problem_found_by_the_model_arrives_with_the_fix(self):
-        import time
+    def brain(self, cloud_reply=None, ready=True):
         from gota import brain
-        sent = []
 
         class Cloud:
-            def cloud_ready(self): return True
-            def one_shot(self, system, user, image=None, on_delta=None): return '{"ok": false, "problemas": ["porta 38 foi tocada"], "fix": "configure terminal\\nend"}'
-        b = brain.Brain(store.Profile(), store.Settings(), lambda: Cloud(), images=None)
-        b.followup = lambda cid, text: sent.append(text)
-        b.run(NetconfFastPath.REQUEST, [], "t")
-        for _ in range(50):
-            if sent:
-                break
-            time.sleep(0.05)
-        self.assertIn("porta 38", sent[0])
-        self.assertIn("```cisco", sent[0])
+            def cloud_ready(self): return ready
+            def cancel(self): pass
+            def one_shot(self, system, user, image=None, on_delta=None):
+                if cloud_reply is None:
+                    raise RuntimeError("fora do ar")
+                self.last_user = user
+                return cloud_reply
+        self.cloud = Cloud()
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: self.cloud, images=None)
+        b.followup = lambda cid, text: self.fail("nothing about the checking may be shown separately")
+        return b
+
+    def test_the_user_only_sees_the_checked_final_script(self):
+        b = self.brain(self.FINAL)
+        reply, _ = b.run(NetconfFastPath.REQUEST, [], "t")
+        self.assertEqual(reply, self.FINAL)                      # the model's corrected result, not the rule-built draft
+        self.assertIn("RASCUNHO", self.cloud.last_user)           # the draft went through the check
+        self.assertNotIn("erro", reply.lower())
+
+    def test_without_a_cloud_model_a_complete_draft_is_still_delivered(self):
+        b = self.brain(None, ready=False)
+        reply, _ = b.run(NetconfFastPath.REQUEST, [], "t")
+        self.assertIn("default interface range GigabitEthernet1/0/1-37", reply)
+
+    def test_a_failed_check_keeps_the_complete_draft(self):
+        reply, _ = self.brain(None).run(NetconfFastPath.REQUEST, [], "t")
+        self.assertIn("```cisco", reply)
+
+    def test_requirements_beyond_the_table_make_the_draft_partial(self):
+        from gota import netconf
+        extra = NetconfFastPath.REQUEST + "\n49 a 52 devem ficar desativadas\nTrunks permitindo somente as vlans 150, 200 e 201\n"
+        self.assertFalse(netconf.analyze(extra)["complete"])
+        self.assertTrue(netconf.analyze(NetconfFastPath.REQUEST)["complete"])
 
 class WhatsappUnread(unittest.TestCase):
     def make(self, connected, chats=None, error=None):
@@ -787,6 +791,11 @@ class WhatsappUnread(unittest.TestCase):
         self.assertIn("2 conversas não lidas", reply)
         self.assertIn("Maria (3)", reply)
         self.assertIn("4 mensagens", reply)
+
+    def test_the_chip_number_is_the_reference_for_how_many_chats(self):
+        b = self.make(True, {"total": 1, "chats": [{"title": "T2W | PLANTONISTA", "count": 2}], "via": "filtro"})
+        reply, _ = b.run("quantas conversas não lidas eu tenho no whatsapp?", [], "t")
+        self.assertEqual(reply, "O senhor tem 1 conversa não lida no WhatsApp (2 mensagens): T2W | PLANTONISTA (2).")
 
     def test_not_connected_and_empty(self):
         self.assertIn("não está conectado", self.make(False).run("tem mensagem nova no zap?", [], "t")[0])
@@ -866,6 +875,38 @@ class MassiveContext(unittest.TestCase):
         history = [("user" if i % 2 == 0 else "model", f"mensagem {i}") for i in range(300)]
         C("k").chat("k", "sistema", history, "pergunta final")
         self.assertEqual(sent["n"], 302)                       # system + all 300 + the question
+
+class NetconfScope(unittest.TestCase):
+    REQ = "Vlan acess 30:\n1 a 24; Usuarios\nTrunk:\n45 a 48; Uplinks\nPortas 49 a 52 devem ser desativadas\n"
+
+    def test_listed_ports_include_sentences(self):
+        from gota import netconf
+        self.assertEqual(netconf.listed_ports(self.REQ), set(range(1, 25)) | set(range(45, 53)))
+
+    def test_a_reset_wider_than_the_request_is_corrected_silently(self):
+        from gota import netconf
+        fixed = netconf.enforce_scope(self.REQ, "configure terminal\ndefault interface range GigabitEthernet1/0/1-52\ninterface range GigabitEthernet1/0/1-24\nend")
+        self.assertIn("default interface range GigabitEthernet1/0/1-24", fixed)
+        self.assertIn("default interface range GigabitEthernet1/0/45-52", fixed)
+        self.assertNotIn("1-52", fixed)
+
+    def test_requests_without_a_port_list_are_left_alone(self):
+        from gota import netconf
+        s = "default interface range GigabitEthernet1/0/1-52"
+        self.assertEqual(netconf.enforce_scope("configure o switch", s), s)
+
+    def test_the_validated_final_script_goes_through_the_scope_check(self):
+        from gota import brain
+
+        class Cloud:
+            def cloud_ready(self): return True
+            def cancel(self): pass
+            def one_shot(self, system, user, image=None, on_delta=None):
+                return "```cisco\nconfigure terminal\ndefault interface range GigabitEthernet1/0/1-52\nend\n```"
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: Cloud(), images=None)
+        out = b.validated_config(self.REQ, "rascunho")
+        self.assertNotIn("1-52", out)
+        self.assertIn("1-24", out)
 
 if __name__ == "__main__":
     unittest.main()

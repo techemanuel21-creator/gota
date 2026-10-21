@@ -29,6 +29,7 @@ AGENT_WORDS = re.compile(
     r"agende|monitora|monitorar|avise quando|variaveis de ambiente|sql|banco de dados|sqlite|traduz|traduza|"
     r"transcreve|transcrever|varredura|segredos|requisicao|testes|pytest|modo agente)\b")
 WA_UNREAD = re.compile(r"(whats\s?app|zap)\b.*\b(nao lidas?|nao lidos?|novas?|pendentes?|sem ler|por ler|para ler)\b|\b(nao lidas?|nao lidos?|mensage(?:m|ns) novas?|conversas? novas?|novas? mensage(?:m|ns)|novas? conversas?|pendentes?)\b.*\b(whats\s?app|zap)\b|\bquantas?\b.*\b(conversas?|mensage(?:m|ns))\b.*\b(whats\s?app|zap)\b")
+CONFIG_REQUEST = re.compile(r"\b(cisco|switch|vlan|vlans|trunk|switchport|catalyst)\b.*\b(configur\w*|script|comando\w*|config|resetar|portas?)\b|\b(configur\w*|script|comando\w*|resetar)\b.*\b(cisco|switch|vlan|vlans|trunk|switchport|catalyst)\b", re.S)
 SCRIPT_REQUEST = re.compile(r"\b(crie|criar|gere|gerar|escreva|escrever|monte|montar|configure|configurar|faca|fazer|preciso de|me de|me passe)\b.*\b(script|comando|comandos|configuracao|config|playbook|dockerfile|regra|query|consulta|sql|one-?liner|codigo)\b", re.S)
 TECH_WORDS = re.compile(
     r"\b(windows|linux|ubuntu|debian|centos|rhel|powershell|cmd|registro|firewall|vpn|dns|dhcp|active directory|gpo|ldap|kerberos|"
@@ -220,10 +221,15 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             if WA_UNREAD.search(lower) and not re.search(r"\b(mande|manda|envie|envia|enviar|responda|responde)\b", lower):
                 self.on_phase("working")
                 return self.whatsapp_unread(), None
-            fast = netconf.try_answer(goal, sir)   # a table of switch ports and VLANs: the script is built right here, instantly and by the rules
-            if fast:
-                self.validate_later(goal, fast, chat_id)   # the instant draft is shown now; the model checks it against the request in the background
-                return fast, None
+            net = netconf.analyze(goal, sir)   # a table of switch ports and VLANs: a draft is built right here (instantly, by the rules)
+            if net and net["draft"] and not spoken:
+                self.on_status("Escrevendo e conferindo o script…")
+                final = self.validated_config(goal, net["draft"])   # the model checks it against the request and returns the FINAL script: no visible error, no follow-up
+                if final:
+                    return final, None
+                if net["complete"]:   # nobody to check it right now: the rule-built draft covers everything the request asked
+                    return net["draft"], None
+                # a partial draft is not an answer: the model path below writes (and then checks) the whole script
             if is_retry(lower) and self.last_image_prompt:
                 return self.draw(self.last_image_prompt)
             quick = self.quick_answer(goal, lower)
@@ -274,7 +280,8 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
                 user_text += "\n[Responda direto com action reply, sem ask_expert: você já sabe responder perguntas de TI]"
                 if SCRIPT_REQUEST.search(lower):   # a script/command/config was asked for: the code in one block, no comments, at most two lines after it (fewer tokens = faster)
                     user_text += "\n[Entregue só o código num bloco, sem comentários dentro dele e com no máximo 2 linhas de observação depois]"
-            raw = llm.chat(chat_id, self.system_prompt(), turns, user_text, image, False, on_delta=None if will_override else self.stream_to_ui())
+            self._config = bool(CONFIG_REQUEST.search(lower)) and not spoken and image is None   # a network configuration: written, checked, and only then shown
+            raw = llm.chat(chat_id, self.system_prompt(), turns, user_text, image, False, on_delta=None if (will_override or self._config) else self.stream_to_ui())
         except Exception as e:
             return f"Perdão, {sir}, tive um problema ao pensar: {e}", None
         data = self.extract_json(raw)
@@ -291,32 +298,40 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             self.memory.add("user", str(data["remember"]))
         return self.act(data, goal, lower, image, asked)
 
-    VALIDATE_SYSTEM = ("Você confere um script de TI contra o pedido original. Verifique: 1) cada porta/item do pedido foi configurado com o modo, as VLANs e a descrição pedidos; "
-                       "2) nenhuma porta ou item fora do pedido foi tocado; 3) nada foi inventado (VLANs permitidas, nativa, senhas); 4) a sintaxe é válida para o equipamento. "
-                       'Responda SOMENTE JSON: {"ok":true} se tudo está certo, ou {"ok":false,"problemas":["o que está errado, curto"],"fix":"o script corrigido completo"}.')
+    VALIDATE_SYSTEM = ("Você é revisor sênior de redes Cisco. Receba o PEDIDO e um RASCUNHO. Confira cada requisito do pedido (portas e faixas, modos, VLANs a criar, trunks e VLANs permitidas, portas "
+                       "desativadas, descrições, voice VLAN, o que NÃO pode ser tocado, reset apenas das portas listadas) e entregue o script FINAL correto e completo, já com todas as correções, num único "
+                       "bloco ```cisco, sem comentários dentro. Depois do bloco, no máximo 3 linhas curtas de observação (suposições e riscos). Nunca fale do rascunho, de correções ou de erros: "
+                       "só o resultado final. Se o rascunho já está certo, devolva-o igual. Não invente nada que o pedido não diga: em trunk com VLANs permitidas NÃO defina native vlan se o pedido não falar dela, não dê nomes às VLANs que o pedido não nomeou (nada de name VLAN20), não acrescente no shutdown nem outros comandos que o pedido não mandou e não toque em portas fora da lista.")
+    VALIDATE_SECONDS = 28
 
-    def validate_later(self, request, answer, chat_id):
-        """Instant draft first, model check after: when the cloud model is available it reads the draft against the request (a few seconds) and the result
-        arrives in the chat as a follow-up. Only a real problem is shown in full; a clean check is one line."""
+    def validated_config(self, request, draft):
+        """The draft goes through a model check against the request and comes back FINAL (corrected). Returns None when no cloud model answers in time or the answer has
+        no script: the caller then keeps the draft. Nothing about the checking is ever shown to the user."""
         llm = self.llm()
-        if not getattr(self, "followup", None) or llm is None or not getattr(llm, "cloud_ready", lambda: False)():
-            return
-        code = re.search(r"```[\w]*\n(.*?)```", answer, re.S)
+        if llm is None or not getattr(llm, "cloud_ready", lambda: False)():
+            return None
+        box = {}
 
         def work():
             try:
-                out = llm.one_shot(self.VALIDATE_SYSTEM, f"PEDIDO:\n{request[:3000]}\n\nSCRIPT:\n{(code.group(1) if code else answer)[:6000]}")
-                data = self.extract_json(out) or {}
+                box["out"] = str(llm.one_shot(self.VALIDATE_SYSTEM, f"PEDIDO:\n{request[:4000]}\n\nRASCUNHO:\n{draft[:8000]}", None, self.stream_to_ui()))
             except Exception:
-                return
-            if data.get("ok") is True:
-                self.followup(chat_id, "✓ Conferi o script contra o seu pedido: está de acordo (portas, modos, VLANs e descrições).")
-            elif data.get("ok") is False and (data.get("problemas") or data.get("fix")):
-                msg = "⚠ Ao conferir, encontrei o que ajustar:\n" + "\n".join(f"- {x}" for x in (data.get("problemas") or [])[:5])
-                if data.get("fix"):
-                    msg += "\n\nScript corrigido:\n\n```cisco\n" + str(data["fix"]).strip().strip("`") + "\n```"
-                self.followup(chat_id, msg)
-        threading.Thread(target=work, daemon=True).start()
+                box["out"] = None
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        th.join(self.VALIDATE_SECONDS)
+        if th.is_alive():
+            try:
+                llm.cancel()
+            except Exception:
+                pass
+            return None
+        out = (box.get("out") or "").strip()
+        data = self.extract_json(out) if out.startswith("{") else None
+        text = str((data or {}).get("text") or out).strip()
+        if not re.search(r"```[\w]*\n.+?```", text, re.S):
+            return None
+        return re.sub(r"(```[\w]*\n)(.*?)(```)", lambda m: m.group(1) + netconf.enforce_scope(request, m.group(2).rstrip("\n")) + "\n" + m.group(3), text, count=1, flags=re.S)
 
     # ------------------------------------------------------------------ actions
     def act(self, d, goal, lower, image, asked):

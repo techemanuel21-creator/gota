@@ -121,3 +121,46 @@ def try_answer(text, sir="senhor"):
     if spec["voice_vlans"]:
         notes.append("`vlan " + ", ".join(map(str, spec["voice_vlans"])) + "` só garante que a VLAN existe; se já existir, nada muda.")
     return (f"Pois não, {sir}. Script pronto: reseta só as portas listadas e configura cada grupo.\n\n```cisco\n" + script(spec) + "\n```\n\n" + "\n".join(f"- {n}" for n in notes))
+
+
+# requirements this parser does NOT build (disabled ports, allowed/native VLANs, STP, security, routing...): when the request has any, the draft is partial
+EXTRA = re.compile(r"desativ|desabilit|shutdown|permit|permiss|somente as vlans|apenas as vlans|allowed|nativ|native|portfast|spanning|stp\b|speed|duplex|port-?security|storm|dhcp|snooping|"
+                   r"etherchannel|lacp|channel|banner|hostname|senha|password|snmp|ntp|\bacl\b|ospf|gateway|\bip address|\bsvi\b|rota\b|ssh|telnet|syslog|qos|poe", re.I)
+
+
+def analyze(text, sir="senhor"):
+    """None, or {"draft": reply text, "complete": bool}. complete=False when the request has requirements beyond the port table: the draft is then only a starting point."""
+    spec = parse(text)
+    if spec is None:
+        return None
+    lines = [l for l in text.splitlines() if l.strip() and not PORT_LINE.match(l) and not _heading(l)]
+    extra = any(EXTRA.search(tools.norm(l)) for l in lines)
+    return {"draft": try_answer(text, sir), "complete": not extra}
+
+
+def listed_ports(text):
+    """Every port the request names: the rows of the table plus sentences like "Portas 49 a 52 devem ...". Empty when the request has no port list."""
+    ports = set()
+    for line in text.splitlines():
+        m = PORT_LINE.match(line)
+        if m and (p := parse_ports(m.group(1))):
+            ports.update(p)
+            continue
+        m = re.search(r"\bportas?\s+(\d+(?:\s*(?:a|-|até|ate|e|,)\s*\d+)*)", tools.norm(line))
+        if m and (p := parse_ports(m.group(1))):
+            ports.update(p)
+    return ports
+
+
+def enforce_scope(text, script, prefix="GigabitEthernet1/0/"):
+    """The reset must touch ONLY the ports the request lists: any `default interface range` in the script is rebuilt from the listed ports (a model that resets
+    a whole range, ports it was not asked to touch included, is corrected here, silently). Scripts of requests without a port list are returned as they are."""
+    allowed = listed_ports(text)
+    if not allowed or "default interface" not in script:
+        return script
+    lines = script.splitlines()
+    first = next((i for i, l in enumerate(lines) if l.strip().lower().startswith("default interface")), None)
+    kept = [l for l in lines if not l.strip().lower().startswith("default interface")]
+    resets = [f"default interface range {prefix}{lo}" if lo == hi else f"default interface range {prefix}{lo}-{hi}" for lo, hi in ranges(sorted(allowed))]
+    kept[first:first] = resets
+    return "\n".join(kept)
