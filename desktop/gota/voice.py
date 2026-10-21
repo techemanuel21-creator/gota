@@ -44,7 +44,7 @@ _PT_WORDS = set("o a os as um uma uns umas de da do das dos em no na nos nas par
 
 
 def split_languages(text):
-    """[(lang, text)] with lang 'en' for runs of English (three or more words with English function words and no Portuguese ones, e.g. an error
+    """[(lang, text)] with lang 'en' for runs of English (four or more words, at least two English function words and no Portuguese ones, e.g. an error
     message quoted from the screen) and 'pt' for everything else, so each part is read with the voice that pronounces it right."""
     import re
     tokens = re.findall(r"\s+|[^\s]+", text)
@@ -66,7 +66,7 @@ def split_languages(text):
             continue
         words = [w for _t, w in toks if w]
         hits = sum(1 for w in words if w in _EN_WORDS)
-        lang = "en" if kind == "pt" and len(words) >= 3 and hits >= 1 and hits * 4 >= len(words) - 1 and all(w.isascii() for w in words) else "pt"
+        lang = "en" if kind == "pt" and len(words) >= 4 and hits >= 2 and hits * 4 >= len(words) and all(w.isascii() for w in words) else "pt"
         piece = "".join(t for t, _w in toks)
         if out and out[-1][0] == lang:
             out[-1] = (lang, out[-1][1] + piece)
@@ -106,11 +106,15 @@ class Speaker:
         engine.setProperty("rate", 150)
         return engine
 
+    english = True   # read English phrases with English sounds (the same voice); can be switched off in the Voz e microfone window
+
     def _render(self, piper, text, np):
         """The audio for `text` in the SAME voice: English phrases are phonemized as English (espeak en-us) and spoken by the Portuguese voice, whose
-        phoneme set covers them, so they come out as an English-sounding butler instead of Portuguese-style reading of English words."""
+        phoneme set covers them. A short pause separates them from the Portuguese around them."""
+        pieces = split_languages(text) if self.english else [("pt", text)]
+        pause = np.zeros(int(piper.config.sample_rate * 0.18), dtype=np.int16)
         parts = []
-        for lang, piece in split_languages(text):
+        for k, (lang, piece) in enumerate(pieces):
             old = piper.config.espeak_voice
             if lang == "en":
                 piper.config.espeak_voice = "en-us"
@@ -118,7 +122,11 @@ class Speaker:
                 raw = b"".join(c.audio_int16_bytes for c in piper.synthesize(piece, syn_config=self.cfg))
             finally:
                 piper.config.espeak_voice = old
+            if lang == "en" and parts:
+                parts.append(pause)
             parts.append(np.frombuffer(raw, dtype=np.int16))
+            if lang == "en" and k < len(pieces) - 1:
+                parts.append(pause)
         return np.concatenate(parts) if parts else np.zeros(1, dtype=np.int16)
 
     def _run(self):
