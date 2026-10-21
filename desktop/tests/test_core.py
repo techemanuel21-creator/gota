@@ -340,6 +340,33 @@ class TestScreensAndNames(unittest.TestCase):
         self.assertIn("Emanuel SP", v[:3])
         self.assertLessEqual(len(v), 8)
 
+class TestCloud(unittest.TestCase):
+    def test_clean_removes_reasoning(self):
+        from gota import cloud
+        self.assertEqual(cloud.clean("<think>pensando</think>Olá"), "Olá")
+        self.assertEqual(cloud.clean("Resposta <think>ainda pensando"), "Resposta ")
+        self.assertEqual(cloud.clean("Oi"), "Oi")
+
+    def test_hybrid_falls_back_to_local(self):
+        from gota import cloud
+
+        class Local:
+            def chat(self, *a, **k): return "local"
+            def cancel(self): pass
+
+        class Settings:
+            def get(self, k): return None
+
+        class Broken:
+            def chat(self, *a, **k): raise cloud.CloudError("fora do ar")
+            def cancel(self): pass
+        h = cloud.Hybrid(Local(), Settings())
+        h._client = lambda: Broken()
+        self.assertEqual(h.chat("k", "s", [], "oi"), "local")
+        self.assertEqual(h.using, "local")
+        self.assertIn("fora do ar", h.last_error)
+        self.assertGreater(h.down_until, 0)
+
 if __name__ == "__main__":
     unittest.main()
 

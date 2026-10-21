@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
-from . import agent as agent_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
+from . import agent as agent_mod, cloud as cloud_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
 from .overlay import CatOverlay
 from .widgets import (ACCENT, BG, BORDER, COLORS, FONT, GREEN, GREEN_HOVER, HOVER, MUTED, PRIMARY, PRIMARY_HOVER, RED, SURFACE, SURFACE2, TEXT,
                       CatView, ChatInput, PillEntry, RoundButton, Toggle, bubble, lerp, rounded, sprites)
@@ -279,6 +279,8 @@ class App(tk.Tk):
         self.clear()
         if not self.profile.is_set:
             return self.show_name()
+        if not self.settings.get("cloud_asked"):
+            return self.show_cloud_setup()
         path = self.model_path()
         if path is None:
             return self.show_download()
@@ -321,6 +323,99 @@ class App(tk.Tk):
             self.show_boot()
         RoundButton(box, "Continuar", go, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE, height=42, width=180).pack(pady=(20, 0))
 
+    def show_cloud_setup(self):
+        """First use: the OpenRouter key for the online brain (optional: without it Gota answers with the on-device model only)."""
+        box = self.card("Inteligência na nuvem", "Online, o Gota fica bem mais rápido e esperto usando o modelo MiniMax pelo OpenRouter (gratuito). "
+                                                 "Sem internet, ou sem chave, ele usa o Gemma que roda aqui no computador.")
+        tk.Label(box, text="Cole a sua chave de API do OpenRouter (começa com sk-or-). Crie uma de graça em openrouter.ai/keys.", bg=SURFACE, fg=MUTED,
+                 font=("Segoe UI", 10), wraplength=440, justify="center").pack(pady=(14, 0))
+        pill = PillEntry(box, lambda: save(), parent_bg=SURFACE, fill=SURFACE2, hint="sk-or-v1-...")
+        pill.pack(fill="x", pady=(12, 6))
+        pill.focus()
+        note = tk.Label(box, text="Atenção: com a nuvem ligada, o que você escreve e os prints de tela que pedir para analisar são enviados ao OpenRouter/MiniMax. "
+                                  "Offline, tudo fica só neste computador. A chave fica guardada criptografada para o seu usuário do Windows.",
+                        bg=SURFACE, fg=MUTED, font=("Segoe UI", 9), wraplength=440, justify="left")
+        note.pack(pady=(4, 8))
+        status = tk.Label(box, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10), wraplength=440)
+        status.pack()
+
+        def finish():
+            self.settings.set("cloud_asked", True)
+            self.show_boot()
+
+        def save():
+            key = pill.get().strip()
+            if not key:
+                return
+            status.configure(text="Testando a chave...")
+
+            def work():
+                err = cloud_mod.OpenRouter(key, self.settings.get("cloud_model") or cloud_mod.DEFAULT_MODEL).check()
+
+                def done():
+                    if err:
+                        status.configure(text=f"Não funcionou: {err}", fg=RED)
+                    else:
+                        cloud_mod.save_key(key)
+                        self.settings.set("use_cloud", True)
+                        finish()
+                self.ui(done)
+            threading.Thread(target=work, daemon=True).start()
+        row = tk.Frame(box, bg=SURFACE)
+        row.pack(pady=(10, 0))
+        RoundButton(row, "Salvar e continuar", save, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE, height=42, width=190).pack(side="left", padx=6)
+        RoundButton(row, "Usar só offline", lambda: (self.settings.set("use_cloud", False), finish()), parent_bg=SURFACE, height=42, width=150).pack(side="left", padx=6)
+
+    def cloud_dialog(self):
+        """Settings for the online brain: key, on/off, and a test."""
+        d = Dialog(self, "Nuvem (OpenRouter)", 560, 430)
+        tk.Label(d.body, text="Online o Gota usa o modelo da nuvem; offline, ou se ela falhar, usa o Gemma deste computador.", bg=SURFACE, fg=MUTED,
+                 wraplength=510, justify="left", font=("Segoe UI", 10)).pack(anchor="w")
+        on = tk.Frame(d.body, bg=SURFACE)
+        on.pack(fill="x", pady=(12, 4))
+        tk.Label(on, text="Usar a nuvem quando estiver online", bg=SURFACE, fg=TEXT, font=FONT).pack(side="left")
+        Toggle(on, self.settings.get("use_cloud") is not False, lambda v: self.settings.set("use_cloud", bool(v))).pack(side="right")
+        tk.Label(d.body, text="Chave de API do OpenRouter (deixe em branco para manter a atual):", bg=SURFACE, fg=MUTED, wraplength=510, justify="left",
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(10, 4))
+        pill = PillEntry(d.body, lambda: save(), parent_bg=SURFACE, fill=SURFACE2, hint="sk-or-v1-... (" + ("já há uma chave guardada" if cloud_mod.load_key() else "sem chave") + ")")
+        pill.pack(fill="x")
+        tk.Label(d.body, text="Modelo:", bg=SURFACE, fg=MUTED, font=("Segoe UI", 10)).pack(anchor="w", pady=(10, 4))
+        model = PillEntry(d.body, lambda: None, parent_bg=SURFACE, fill=SURFACE2, hint=self.settings.get("cloud_model") or cloud_mod.DEFAULT_MODEL)
+        model.pack(fill="x")
+        status = tk.Label(d.body, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 10), wraplength=510, justify="left")
+        status.pack(anchor="w", pady=(10, 0))
+
+        def save(test_only=False):
+            key = pill.get().strip() or cloud_mod.load_key()
+            mid = model.get().strip() or self.settings.get("cloud_model") or cloud_mod.DEFAULT_MODEL
+            if not key:
+                status.configure(text="Cole uma chave primeiro.", fg=RED)
+                return
+            status.configure(text="Testando...", fg=ACCENT)
+
+            def work():
+                err = cloud_mod.OpenRouter(key, mid).check()
+
+                def done():
+                    if err:
+                        status.configure(text=f"Não funcionou: {err}", fg=RED)
+                    else:
+                        cloud_mod.save_key(key)
+                        self.settings.set("cloud_model", "" if mid == cloud_mod.DEFAULT_MODEL else mid)
+                        self.settings.set("use_cloud", True)
+                        self.settings.set("cloud_asked", True)
+                        status.configure(text="Funcionando e salvo. A nuvem será usada quando houver internet.", fg=GREEN)
+                self.ui(done)
+            threading.Thread(target=work, daemon=True).start()
+
+        def remove():
+            cloud_mod.clear_key()
+            status.configure(text="Chave removida: o Gota usa só o Gemma local.", fg=ACCENT)
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(14, 0))
+        RoundButton(row, "Testar e salvar", save, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="left")
+        RoundButton(row, "Remover chave", remove, parent_bg=SURFACE).pack(side="left", padx=8)
+
     def show_download(self):
         box = self.card("Preparando o Gota", f"Baixando a inteligência do Gota (~{llm.MODEL_MB / 1000:.1f} GB, uma vez só). Depois disso ela roda no próprio computador, mesmo sem internet.")
         bar = tk.Canvas(box, width=440, height=10, bg=SURFACE, highlightthickness=0)
@@ -359,7 +454,7 @@ class App(tk.Tk):
 
         def work():
             try:
-                self.gemma = llm.Gemma(path)
+                self.gemma = cloud_mod.Hybrid(llm.Gemma(path), self.settings)   # online: OpenRouter; offline (or on failure): Gemma
                 self.ui(self.show_boot)
             except Exception as e:
                 self.ui(lambda: messagebox.showerror("Gota", f"Não consegui carregar o modelo:\n{e}", parent=self))
@@ -412,7 +507,7 @@ class App(tk.Tk):
         self.entry = ChatInput(bar, self.send, left=[("attach", "＋", self.attach)], right=[("mic", "🎤", self.toggle_dictation), ("send", "➤", self.send, True)])
         self.entry.pack(fill="x")
         self.mic = self.entry.buttons["mic"]
-        tk.Label(main, text="O Gota roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
+        tk.Label(main, text="Online usa a nuvem (MiniMax); offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
 
         cur = self.settings.get("current_chat")
         if not cur or not self.chats.get(cur):
@@ -473,7 +568,7 @@ class App(tk.Tk):
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 9), anchor="w")
         self.dl_label.pack(fill="x", padx=8)
-        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
+        for text, cmd in (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🔌  Integrações", self.integrations_dialog),
                           ("📜  Registro de ações", self.audit_dialog), ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial)):
             self._link(foot, text, cmd, fg=MUTED)
         self._poll_download()
