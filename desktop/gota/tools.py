@@ -23,10 +23,17 @@ def http(url, timeout=8, limit=600_000, headers=None) -> bytes:
 _ONLINE = {"t": 0.0, "v": False}
 
 
+def mark_online():
+    """Called when something that needs the internet just worked (the cloud model): skips the connectivity check for a while."""
+    _ONLINE["hint"] = time.time()
+
+
 def is_online() -> bool:
     """Whether the internet answers (remembered for 20 seconds, so a single question does not pay for the check several times)."""
     if time.time() - _ONLINE["t"] < 20:
         return _ONLINE["v"]
+    if time.time() - _ONLINE.get("hint", 0) < 120:   # the cloud model answered a moment ago: the internet is there, no need for an extra request
+        return True
     try:
         http("https://www.bing.com/robots.txt", timeout=4, limit=200)
         _ONLINE["v"] = True

@@ -10,12 +10,13 @@ from .store import ROOT
 AUDIT = ROOT / "audit.log"
 NOFLASH = 0x08000000
 MAX_STEPS = 8
-SUB_ROLES = ("explorar", "verificar", "planejar", "revisar", "redigir")   # read-only sub-agents; several can run at the same time
+SUB_ROLES = ("explorar", "verificar", "planejar", "revisar", "redigir", "clone")   # read-only sub-agents; several can run at the same time
 ROLE_TEXT = {
     "explorar": "você explora: lê arquivos, logs, configuração e a web e devolve os achados objetivos (números, nomes, caminhos, trechos).",
     "verificar": "você confere: compara uma afirmação ou resultado com a realidade (arquivos, saídas, fontes) e diz o que se sustenta e o que não.",
     "planejar": "você planeja: estuda o contexto (só leitura) e devolve um plano curto, ordenado e executável, com riscos e o que verificar.",
     "revisar": "você revisa: lê código, configuração ou texto e aponta erros reais, riscos e melhorias, por ordem de importância, com o trecho e a correção.",
+    "clone": "você é um clone do agente principal: herdou o contexto da conversa (abaixo, na tarefa) e faz a parte que lhe coube, só lendo, para o principal não perder o fio.",
     "redigir": "você redige: escreve o texto, script ou configuração pedidos (sem gravar em arquivo) e devolve o resultado pronto para o agente principal usar.",
 }
 # tools that only read and do not depend on each other: when asked together in one step they run at the same time
@@ -76,7 +77,7 @@ TOOLS = {
     "git": '{"args":"status","repo":"pasta"}  comandos git (leitura direto; commit/push/merge pedem confirmação)',
     "run_tests": '{"command":"pytest -q","cwd":"pasta"}  roda testes e resume falhas',
     "repo_map": '{"path":"pasta do projeto","depth":3}  mapa de um projeto/pasta: estrutura, arquivos-chave e principais classes/funções',
-    "delegate": '{"role":"explorar|verificar|planejar|revisar|redigir","task":"..."}  entrega a um sub-agente que SÓ lê (não altera nada) e devolve um resumo. Vários ao mesmo tempo: {"tasks":[{"role":"explorar","task":"..."},{"role":"revisar","task":"..."}]}',
+    "delegate": '{"role":"explorar|verificar|planejar|revisar|redigir|clone","task":"..."}  entrega a um sub-agente que SÓ lê (não altera nada) e devolve um resumo. Vários ao mesmo tempo: {"tasks":[{"role":"explorar","task":"..."},{"role":"revisar","task":"..."}]}',
     "final": '{"text":"resposta final ao usuário"}  termina a tarefa',
 }
 
@@ -298,7 +299,9 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
     def _plan(self, goal):
         """For a task with several parts: a short ordered list of steps, so a small model keeps its direction."""
         llm = self.brain.llm()
-        if llm is None or len(goal.split()) < 7:
+        words = len(goal.split())
+        # a short, single-purpose request needs no plan (and the extra model call costs seconds): plan only larger or multi-part tasks
+        if llm is None or words < 7 or (words < 16 and not re.search(r"\b(depois|então|entao|primeiro|em seguida|por fim|e também|e tambem)\b", goal, re.I)):
             return []
         try:
             out = llm.one_shot('Você divide tarefas de TI em passos. Responda SOMENTE JSON {"steps":["passo curto","..."]} com no máximo 5 passos, na ordem em que devem ser feitos, '
@@ -336,6 +339,7 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
         self._tl.role, self._tl.cancelled = role, cancelled
         if not sub:
             self._tl.denied = set()   # a new task starts with a clean slate
+            self._tl.goal, self._tl.domains = goal, None
         if role == "projeto":
             self.last_steps = []
         try:
@@ -400,7 +404,7 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
                         args.pop("new", None)
                     if action == "final":
                         text = str(args.get("text") or args.get("message") or "Pronto.")
-                        if verify and not sub and evidence and len(text) <= 700 and self.brain.settings.get("agent_verify") is not False:   # long answers would cost minutes to rewrite
+                        if verify and not sub and len(evidence) >= 3 and len(text) <= 700 and self.brain.settings.get("agent_verify") is not False:   # long answers would cost minutes to rewrite
                             status("Conferindo a resposta...")
                             text = self._verify(goal, evidence, text)
                         audit("final", {"text": text[:500], "role": role})
@@ -982,7 +986,11 @@ PAPEL: você é um sub-agente de {role}: {ROLE_TEXT.get(role, '')} Você SÓ con
         def run(job):
             for k, v in ctx.items():
                 setattr(self._tl, k, v)
-            return self._loop(job[1], role=job[0], max_steps=5, cancelled=cancelled, quiet=True, verify=False)
+            task = job[1]
+            if job[0] == "clone":   # a clone inherits what has been said so far
+                recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {str(x)[:400]}" for r, x in list(getattr(self.brain, "history", []) or [])[-8:] if str(x).strip())
+                task = f"CONTEXTO DA CONVERSA ATÉ AGORA:\n{recent}\n\nSUA PARTE: {task}" if recent else task
+            return self._loop(task, role=job[0], max_steps=5, cancelled=cancelled, quiet=True, verify=False)
         if len(jobs) == 1:
             results = [run(jobs[0])]
         else:

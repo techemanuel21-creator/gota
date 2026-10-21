@@ -162,7 +162,13 @@ class OpenRouter:
     # the same calls the on-device model offers -----------------------------------------------------------------
     def chat(self, key, system, history, user_text, image=None, think=False, on_delta=None):
         msgs = [{"role": "system", "content": system}]
-        msgs += [{"role": "user" if r == "user" else "assistant", "content": t} for r, t in history[-20:]]
+        kept, chars = [], 0
+        for r, t in reversed(history[-40:]):   # a long memory of the conversation (the cloud model reads it fast), newest first, within a size budget
+            chars += len(t)
+            if chars > 30000 and kept:
+                break
+            kept.append({"role": "user" if r == "user" else "assistant", "content": t})
+        msgs += kept[::-1]
         msgs.append({"role": "user", "content": _content(user_text, image)})
         return self._post(msgs, on_delta)
 
@@ -215,6 +221,8 @@ class Hybrid:
             try:
                 out = call(c)
                 self.using, self.last_error = "cloud", ""
+                from . import tools
+                tools.mark_online()
                 return out
             except CloudError as e:
                 self.last_error = str(e)

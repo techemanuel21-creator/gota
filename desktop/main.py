@@ -87,6 +87,10 @@ if __name__ == "__main__":
     if "--selftest" in sys.argv:
         selftest()
         sys.exit(0)
+    if "--cli" in sys.argv:   # the same brain without the window: python main.py --cli "pergunta"
+        sys.stdout.reconfigure(encoding="utf-8")
+        from gota import sdk
+        sys.exit(sdk.main([a for a in sys.argv[1:] if a != "--cli"]))
     # one copy at a time: a second launch just brings the first one back is not possible without a server, so refuse politely
     mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "GotaLocalAssistantSingleton")
     if ctypes.windll.kernel32.GetLastError() == 183:

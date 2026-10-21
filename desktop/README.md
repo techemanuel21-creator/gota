@@ -70,3 +70,28 @@ O [OpenClaude](https://github.com/Twigpine/openclaude) é um agente de programa�
 * O modelo é pequeno (2B) e roda na CPU: a primeira mensagem de cada conversa leva alguns segundos a mais (o app já "aquece" o modelo em segundo plano).
 * O envio pelo WhatsApp depende de o WhatsApp Web não mudar; o Outlook depende de a TI da empresa permitir o login.
 * Não há cancelamento do som do computador: se tocar outra voz alto enquanto você fala, ele pode se confundir.
+
+## Agente avançado
+
+O agente (modo de tarefas, projetos e rotinas) ganhou, em camadas e sem deixar o chat comum mais lento:
+
+| Recurso | O que faz |
+|---|---|
+| **Ferramentas em paralelo** | Várias consultas de leitura no mesmo passo (`"actions":[...]`) rodam ao mesmo tempo. |
+| **Sub-agentes em paralelo** | `delegate` com até 4 tarefas ao mesmo tempo: explorar, verificar, planejar, revisar, redigir e **clone** (herda o contexto da conversa). Todos só leem. |
+| **Modo plano** | Em tarefas de vários passos o plano aparece numa janela e só executa depois de **Executar**; uma lista de tarefas ao vivo mostra o andamento. Desligável em *Memória e rotinas*. |
+| **Memória entre conversas** | Guarda sozinho (sem chamar o modelo) quem você é, como gosta das coisas, seus ambientes e referências. Janela *Memória e rotinas* para ver, corrigir e apagar. |
+| **Conversas antigas** | A busca de conversas procura no conteúdo; a ferramenta `chat_search` retoma de onde parou. |
+| **Documentos enormes** | `read_document` lê PDF/DOCX/texto de qualquer tamanho em partes ao mesmo tempo (com a nuvem) e responde a pergunta ou resume. |
+| **Navegador geral** | `browser`: abre sites, lê a estrutura (elementos com `ref N`), clica, digita (nunca senhas), rola, tira print, lê erros do console e requisições de rede, testa em tela de celular/tablet/desktop. Site novo e cliques de envio/compra/apagar pedem permissão. |
+| **Terminal e arquivos** | PowerShell e **Bash** (Git Bash ou WSL), notebooks **Jupyter** célula por célula, busca profunda na web (lê as melhores páginas). |
+| **GitHub** | `github` usa o `gh`: PRs, issues e CI (criar/comentar pedem confirmação; apagar repositório, tokens e chaves são proibidos). `git_worktree` cria uma cópia isolada do projeto. |
+| **Páginas e documentos** | `make_html` (páginas interativas), `make_chart` (gráficos claro/escuro), `make_slides` (PowerPoint), `serve_and_open` (servidor local + navegador). |
+| **Rotinas e avisos** | Tarefas que rodam sozinhas em horário fixo, **só com consultas**, e avisam por notificação do Windows (e no celular com um tópico ntfy). |
+| **MCP** | Servidores MCP de terceiros em *Integrações > Servidores MCP*; tudo que voltam é tratado como dados. |
+| **Habilidades prontas** | `skill_install` instala um `SKILL.md` de um endereço, depois de mostrar o conteúdo. |
+| **CLI e SDK** | `python main.py --cli "pergunta"` (ou sem pergunta, interativo) e `from gota.sdk import Gota`. |
+
+**Segurança em camadas:** proibido (senhas, apagar repositório, chaves), pede confirmação (enviar, comprar, apagar, site novo, instalar) e livre (leitura). O que vem de páginas, arquivos, GitHub e servidores MCP é marcado como **dados externos**: nunca é obedecido como ordem. Rotinas rodam sem aprovação humana, então recusam qualquer ação que altere o computador.
+
+**Limites honestos:** profundidade de raciocínio, janela de contexto, visão e fluência em outros idiomas dependem do modelo (o da nuvem é muito melhor que o Gemma offline). Não há sessões na nuvem nem ambiente isolado remoto: o Gota roda na sua máquina Windows. As páginas geradas guardam estado só no navegador (localStorage), sem banco compartilhado.

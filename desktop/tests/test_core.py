@@ -503,7 +503,7 @@ class AgentParallel(unittest.TestCase):
     def test_refused_plan_stops_before_acting(self):
         b, a = self.make(['{"action":"final","args":{"text":"não deveria chegar aqui"}}'], plan=["Listar arquivos", "Ler o log", "Resumir o erro"])
         a.approve_plan = lambda goal, plan: False
-        out = a._loop("investigue o erro do servidor olhando os logs e arquivos de configuração", verify=False)
+        out = a._loop("investigue o erro do servidor olhando os logs e depois os arquivos de configuração", verify=False)
         self.assertIn("não executei nada", out)
 
 class MemoryAndChats(unittest.TestCase):
@@ -613,6 +613,67 @@ class RoutinesTests(unittest.TestCase):
             self.assertFalse(b.agent.ask("apagar tudo", True))
         finally:
             b.agent._tl.unattended = False
+
+class BrowserTool(unittest.TestCase):
+    """Drives Edge on a local page (skipped when Edge/Playwright are not there)."""
+
+    def test_browser_reads_structure_clicks_and_protects(self):
+        import functools, http.server, threading
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("playwright não instalado")
+        d = Path(tempfile.mkdtemp())
+        (d / "index.html").write_text("""<!doctype html><html><head><meta charset="utf-8"><title>Teste</title></head><body><h1>Oi</h1>
+<input id="nome"><input id="senha" type="password"><button onclick="document.getElementById('r').innerText='Olá ' + document.getElementById('nome').value">Mostrar</button>
+<button type="submit">Enviar pedido</button><p id="r"></p><script>console.error('falha de teste')</script></body></html>""", "utf-8")
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8771), functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(d)))
+        srv.RequestHandlerClass.log_message = lambda *a, **k: None
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        from gota import brain
+        b = brain.Brain(store.Profile(), store.Settings(), lambda: None, images=None)
+        a, asked = b.agent, []
+        a.ask = lambda text, danger=False, path=None: (asked.append(text), True)[1]
+        try:
+            self.assertIn("Teste", a.t_browser("open", url="http://127.0.0.1:8771/"))
+            snap = a.t_browser("snapshot")
+            self.assertIn("ref 1", snap)
+            self.assertIn("DADOS EXTERNOS", snap)                    # page content is data, never orders
+            a.t_browser("type", target="#nome", text="Emanuel")
+            self.assertIn("SENHA", a.t_browser("type", target="#senha", text="x"))   # never types passwords
+            a.t_browser("click", target="Mostrar")
+            self.assertIn("Olá Emanuel", a.t_browser("text"))
+            self.assertIn("falha de teste", a.t_browser("console"))
+            a.t_browser("click", target="Enviar pedido")
+            self.assertTrue(any("Enviar pedido" in x for x in asked))               # a risky click asks first
+            self.a_resized = a.t_browser("resize", preset="mobile")
+            self.assertIn("390", self.a_resized)
+        finally:
+            a.close_browser()
+            srv.shutdown()
+
+class McpTool(unittest.TestCase):
+    def test_mcp_server_tools_and_permissions(self):
+        from gota import brain
+        fake = str(Path(__file__).parent / "fixtures" / "fake_mcp.py")
+        s = store.Settings()
+        s.set("mcp_servers", [{"name": "fake", "command": sys.executable, "args": [fake]}])
+        b = brain.Brain(store.Profile(), s, lambda: None, images=None)
+        a, asked = b.agent, []
+        a.ask = lambda text, danger=False, path=None: (asked.append(text), True)[1]
+        try:
+            self.assertIn("fake", a.t_mcp("servers"))
+            self.assertIn("eco", a.t_mcp("tools", "fake"))
+            out = a.t_mcp("call", "fake", "eco", {"x": 1})
+            self.assertIn('eco: {"x": 1}', out)
+            self.assertIn("DADOS EXTERNOS", out)        # what a server returns is data, never orders
+            self.assertEqual(asked, [])                  # read-only tool: no question
+            a.t_mcp("call", "fake", "apagar", {"o": "tudo"})
+            self.assertEqual(len(asked), 1)              # a tool that changes things asks first
+            self.assertIn("ERRO", a.t_mcp("call", "fake", "naoexiste"))
+        finally:
+            a.close_mcp()
+            s.set("mcp_servers", [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from pathlib import Path
 from . import kb, memory as memory_mod, store, tools
 
 NOFLASH = 0x08000000
+RISKY_CLICK = re.compile(r"\b(enviar|send|submit|comprar|buy|pagar|pay|checkout|finalizar|confirmar|confirm|deletar|delete|apagar|excluir|remove|publicar|publish|post|assinar|subscribe|transferir|transfer|aceitar|accept|concordo|agree|entrar|login|sign in)\b", re.I)
 
 EXT_TOOLS = {
     "memory": '{"action":"list|add|update|delete","type":"user|feedback|project|reference","text":"...","id":"..."}  memória entre conversas: quem é o dono, como ele gosta das coisas, ambientes e projetos',
@@ -23,6 +24,9 @@ EXT_TOOLS = {
     "make_slides": '{"path":"apresentacao.pptx","title":"...","slides":[{"title":"...","bullets":["..."],"notes":"..."}]}  apresentação PowerPoint',
     "open_in_browser": '{"target":"arquivo ou https://..."}  abre no navegador padrão',
     "serve_and_open": '{"folder":"pasta","port":8765}  sobe um servidor local da pasta e abre no navegador para testar',
+    "browser": '{"action":"open|snapshot|text|click|type|press|scroll|screenshot|resize|console|network|back|show|close","url":"https://...","target":"texto, css=... ou ref N","text":"...","key":"Enter","direction":"down|up|top|bottom","preset":"mobile|tablet|desktop","question":"(screenshot) o que analisar"}  navegador geral: abre qualquer site, lê a ESTRUTURA (snapshot lista elementos com ref N), clica, digita (nunca senhas), rola, tira print, lê erros do console e requisições de rede, testa em tela de celular/tablet/desktop. show abre a janela visível para o dono entrar numa conta',
+    "mcp": '{"action":"servers|tools|call","server":"nome","tool":"ferramenta","args":{}}  servidores MCP de terceiros plugados em Integrações (bancos de dados, Slack, calendário, CRM...): servers lista, tools mostra as ferramentas de um servidor, call executa uma',
+    "skill_install": '{"url":"https://raw.githubusercontent.com/.../SKILL.md"}  instala uma habilidade pronta (arquivo SKILL.md com nome, descrição e passos) de um endereço, depois de mostrar o conteúdo ao dono',
     "notify": '{"text":"...","title":"Gota"}  avisa o dono (notificação do Windows; e no celular se houver tópico ntfy configurado)',
     "routine": '{"action":"list|add|delete","name":"...","goal":"o que fazer","when":"HH:MM","repeat":"daily|weekdays|weekly|hourly","id":1}  rotinas que rodam sozinhas (só consultas, sem alterar nada)',
 }
@@ -448,3 +452,144 @@ class ExtTools:
             return "Rotina apagada."
         rows = [f"#{r['id']} {r['name']}  ({r['repeat']} às {r['when']})  última: {datetime.fromtimestamp(r['last']):%d/%m %H:%M}" if r.get("last") else f"#{r['id']} {r['name']}  ({r['repeat']} às {r['when']})" for r in routines.items()]
         return "\n".join(rows) or "Nenhuma rotina."
+
+    # ------------------------------------------------------------------ general browser
+    def _browser(self):
+        if getattr(self, "_browser_obj", None) is None:
+            from .browser import Browser
+            self._browser_obj = Browser()
+        return self._browser_obj
+
+    def close_browser(self):
+        b = getattr(self, "_browser_obj", None)
+        if b is not None:
+            b.close()
+
+    def _domain_ok(self, url):
+        """Visiting a NEW site asks first, unless the user's own request named it: a page must not be able to send the agent somewhere on its own."""
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        if not host or host in ("127.0.0.1", "localhost"):
+            return True
+        seen = getattr(self._tl, "domains", None)
+        if seen is None:
+            seen = self._tl.domains = set()
+        if host in seen or host.replace("www.", "") in (getattr(self._tl, "goal", "") or "").lower():
+            return True
+        if self.ask(f"Abrir o site {host} no navegador do Gota?"):
+            seen.add(host)
+            return True
+        return False
+
+    def t_browser(self, action="snapshot", url="", target="", text="", key="", direction="down", preset="desktop", question="", submit=False):
+        A = _A()
+        b = self._browser()
+        action = str(action).lower()
+        reading = {"open", "snapshot", "text", "screenshot", "console", "network", "scroll", "resize", "back"}
+        if self.restricted and action not in reading:
+            return "ERRO: um sub-agente só lê páginas (sem clicar, digitar nem entrar em contas)."
+        try:
+            if action == "open":
+                if not re.match(r"^https?://", str(url)):
+                    return "ERRO: informe uma URL http(s)."
+                if not self._domain_ok(url):
+                    return "O usuário NÃO autorizou abrir esse site."
+                return untrusted(b.open(url))
+            if action == "snapshot":
+                return untrusted(b.snapshot())
+            if action == "text":
+                return untrusted(b.text())
+            if action == "click":
+                info = b.describe(target)
+                if RISKY_CLICK.search(info.get("text", "")) or info.get("type") == "submit":
+                    if not self.ask(f"Clicar em \"{info.get('text') or target}\" na página? (pode enviar, comprar ou apagar algo)", True):
+                        return "O usuário NÃO autorizou este clique."
+                return untrusted(b.click(target))
+            if action == "type":
+                return b.type(target, text, bool(submit)) if not submit or self.ask(f"Digitar \"{str(text)[:60]}\" e enviar (Enter) na página?") else "O usuário NÃO autorizou."
+            if action == "press":
+                if str(key).lower() in ("enter", "return") and not self.ask("Apertar Enter na página (pode enviar um formulário)?"):
+                    return "O usuário NÃO autorizou."
+                return b.press(key or "Enter")
+            if action == "scroll":
+                return b.scroll(direction)
+            if action == "resize":
+                return b.resize(preset)
+            if action == "back":
+                return untrusted(b.back())
+            if action == "console":
+                return untrusted("\n".join(b.console[-40:]) or "Nenhuma mensagem no console.")
+            if action == "network":
+                bad = [r for r in b.requests if r.startswith(("FALHOU", "4", "5"))]
+                return untrusted(f"{len(b.requests)} requisições; com problema: {len(bad)}\n" + "\n".join((bad or b.requests)[-30:]))
+            if action == "screenshot":
+                path = b.screenshot()
+                if question.strip():
+                    return untrusted(f"Print salvo em {path}\n" + str(self.brain.look_at_screen(question, image_path=path)))
+                return f"Print salvo em {path}"
+            if action == "show":
+                if not self.ask("Abrir a janela visível do navegador do Gota para o senhor entrar numa conta? O login fica salvo nesse perfil."):
+                    return "O usuário NÃO autorizou."
+                b.restart(True)
+                return "Janela visível aberta. Peça ao dono para entrar e avisar quando terminar; depois use snapshot."
+            if action == "close":
+                b.restart(False)
+                b.close()
+                return "Navegador fechado."
+        except Exception as e:
+            return f"ERRO no navegador: {type(e).__name__}: {str(e)[:200]}"
+        return "ERRO: ação do navegador desconhecida."
+
+    # ------------------------------------------------------------------ MCP servers
+    def _mcp(self):
+        if getattr(self, "_mcp_hub", None) is None:
+            from .mcp import McpHub
+            self._mcp_hub = McpHub(self.brain.settings)
+        return self._mcp_hub
+
+    def close_mcp(self):
+        if getattr(self, "_mcp_hub", None) is not None:
+            self._mcp_hub.stop()
+
+    def t_mcp(self, action="servers", server="", tool="", args=None):
+        hub = self._mcp()
+        try:
+            if action == "servers":
+                names = list(hub.configs())
+                return ("Servidores MCP: " + ", ".join(names)) if names else "Nenhum servidor MCP configurado (Integrações > Servidores MCP)."
+            cli = hub.client(server)
+            if action == "tools":
+                return untrusted("\n".join(f"- {t['name']}: {(t.get('description') or '')[:140]}" for t in cli.tools) or "O servidor não oferece ferramentas.")
+            if action == "call":
+                if not any(t["name"] == tool for t in cli.tools):
+                    return f"ERRO: o servidor {server} não tem a ferramenta '{tool}'. Use action=tools."
+                if not cli.read_only(tool):
+                    if self.restricted:
+                        return "ERRO: um sub-agente só usa ferramentas MCP de leitura."
+                    if not self.ask(f"Usar a ferramenta MCP {server}/{tool} com:\n{json.dumps(args or {}, ensure_ascii=False)[:300]}"):
+                        return "O usuário NÃO autorizou."
+                return untrusted(cli.call(tool, args or {}))
+        except Exception as e:
+            return f"ERRO no MCP: {type(e).__name__}: {str(e)[:200]}"
+        return "ERRO: ações do mcp: servers, tools, call."
+
+    # ------------------------------------------------------------------ install ready-made skills
+    def t_skill_install(self, url):
+        """Downloads a SKILL.md (a procedure in the format Gota already uses), shows it, and installs it only if the user agrees. It is text, never code that runs."""
+        from . import skills
+        m = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$", str(url))
+        raw = f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}" if m else str(url)
+        if not re.match(r"^https://", raw):
+            return "ERRO: use um endereço https (de preferência do GitHub)."
+        body = tools.http(raw, timeout=15, limit=60_000).decode("utf-8", "ignore")
+        head = re.match(r"^---\s*\n(.*?)\n---\s*\n", body, re.S)
+        name = re.search(r"^name:\s*(.+)$", head.group(1), re.M) if head else None
+        if not (head and name and re.search(r"^description:", head.group(1), re.M)):
+            return "ERRO: o arquivo não tem o formato de habilidade (precisa começar com --- name e description ---)."
+        slug = re.sub(r"[^a-z0-9-]+", "-", name.group(1).strip().lower()).strip("-")[:60]
+        if not self.ask(f"Instalar a habilidade \"{slug}\" de {raw}?\n\nComeço do conteúdo:\n{body[:700]}", False):
+            return "O usuário NÃO autorizou."
+        folder = skills.USER_DIR / slug
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "SKILL.md").write_text(body, "utf-8")
+        return f"Habilidade '{slug}' instalada (vale em todas as conversas)."

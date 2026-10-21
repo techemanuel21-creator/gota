@@ -2179,7 +2179,51 @@ class App(tk.Tk):
         def save():
             self.settings.set("integrations", {k: v.get().strip() for k, v in fields.items() if v.get().strip()})
             d.destroy()
-        RoundButton(d.body, "Salvar", save, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(anchor="e", pady=(16, 0))
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(16, 0))
+        RoundButton(row, "Servidores MCP…", lambda: self.mcp_dialog(d), parent_bg=SURFACE).pack(side="left")
+        RoundButton(row, "Salvar", save, bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="right")
+
+    def mcp_dialog(self, parent=None):
+        """Plug in third-party tool servers (MCP): a JSON list the user edits, e.g. a database or Slack server."""
+        d = Dialog(self, "Servidores MCP", 640, 520)
+        tk.Label(d.body, text="Servidores de ferramentas de terceiros (MCP) que o agente pode usar. Uma lista em JSON: nome, comando, argumentos e variáveis. "
+                              "Ex.: [{\"name\":\"arquivos\",\"command\":\"npx\",\"args\":[\"-y\",\"@modelcontextprotocol/server-filesystem\",\"C:/dados\"]}]. "
+                              "Cada uso que altera algo pede a sua permissão.", bg=SURFACE, fg=MUTED, wraplength=590, justify="left", font=("Segoe UI", 10)).pack(anchor="w")
+        box = tk.Text(d.body, bg=SURFACE2, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Consolas", 10), wrap="word", bd=0, padx=10, pady=8, height=14)
+        box.pack(fill="both", expand=True, pady=10)
+        box.insert("1.0", json.dumps(self.settings.get("mcp_servers") or [], ensure_ascii=False, indent=2))
+        status = tk.Label(d.body, text="", bg=SURFACE, fg=MUTED, font=("Segoe UI", 10), wraplength=590, justify="left")
+        status.pack(anchor="w")
+
+        def save(test=False):
+            try:
+                cfg = json.loads(box.get("1.0", "end").strip() or "[]")
+                assert isinstance(cfg, list) and all(isinstance(c, dict) and c.get("name") and c.get("command") for c in cfg)
+            except Exception:
+                status.configure(text="JSON inválido: precisa ser uma lista de objetos com name e command.", fg=RED)
+                return
+            self.settings.set("mcp_servers", cfg)
+            self.brain.agent.close_mcp()
+            if not test:
+                status.configure(text="Salvo.", fg=GREEN)
+                return
+            status.configure(text="Testando…", fg=MUTED)
+
+            def work():
+                lines = []
+                for c in cfg:
+                    try:
+                        cli = self.brain.agent._mcp().client(c["name"])
+                        lines.append(f"✓ {c['name']}: {len(cli.tools)} ferramenta(s)")
+                    except Exception as e:
+                        lines.append(f"✗ {c['name']}: {str(e)[:120]}")
+                self.ui(lambda: status.configure(text="\n".join(lines) or "Nenhum servidor.", fg=MUTED))
+            threading.Thread(target=work, daemon=True).start()
+        row = tk.Frame(d.body, bg=SURFACE)
+        row.pack(fill="x", pady=(10, 0))
+        RoundButton(row, "Salvar e testar", lambda: save(True), bg=PRIMARY, hover=PRIMARY_HOVER, parent_bg=SURFACE).pack(side="left")
+        RoundButton(row, "Salvar", save, parent_bg=SURFACE).pack(side="left", padx=8)
 
     def audit_dialog(self):
         d = self._list_dialog("Registro de ações", "Cada ferramenta que usei e cada permissão que você deu ou negou, da mais recente para a mais antiga.", 600)
