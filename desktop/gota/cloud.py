@@ -269,7 +269,7 @@ class Hybrid:
     def _client(self):
         if self.settings.get("use_cloud") is False or time.time() < self.down_until:
             return None
-        if self.settings.get("engine") != "openrouter":   # Desktop 2: opencode's free models first, when it is installed
+        if self.settings.get("engine") != "openrouter":   # opencode's free models first, when it is installed
             from . import opencode
             if opencode.available():
                 model = self.settings.get("oc_model") or opencode.DEFAULT_MODEL
