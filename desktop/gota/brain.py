@@ -267,6 +267,9 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
             return self.agent.run_project(goal, project, history), None
         lower = norm(goal)
         sir = self.p.sir()
+        if image is not None and not self.is_command(lower):   # a picture came with the message: it is the subject, never the live screen; one pass, no "decide what to do" call first
+            on_phase("thinking")
+            return self.look_at_screen(goal, spoken=spoken, history=history, image_path=image), None
         if image is None:
             try:   # what he says about himself, his taste and his environment is kept across conversations (no model call: no delay)
                 self.memory.capture(goal)
@@ -393,6 +396,8 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         a = d.get("action")
         if a == "look_at_screen":
             self.on_phase("thinking")
+            if image is not None:   # he attached a picture: that one is what is analysed, not the screen
+                return self.look_at_screen(goal, spoken=self.spoken, history=self.history, image_path=image), None
             return self.look_at_screen(goal, spoken=self.spoken, history=self.history, screen=self.parse_screen(goal) or d.get("screen")), None
         if a == "whatsapp_unread":
             self.on_phase("working")
@@ -881,7 +886,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         return ((data or {}).get("text") or out).strip()
 
     SCREEN_SYSTEM = ("Você é o Gota, especialista sênior em TI: Veeam (backup, fita, restauração), VMware (vSphere, vCenter, ESXi), Hyper-V, Nutanix, Windows Server, Linux, redes, segurança, "
-                      "armazenamento, backup e desenvolvimento de software, e mordomo de {who}. Você está olhando {which} do computador dele. Recebe a IMAGEM e o TEXTO LIDO DA TELA (OCR, pode ter "
+                      "armazenamento, backup e desenvolvimento de software, e mordomo de {who}. Você está olhando {which}. Recebe a IMAGEM e o TEXTO LIDO DA TELA (OCR, pode ter "
                       "pequenos erros de leitura): use o texto para ler com exatidão mensagens, códigos de erro, nomes de jobs, servidores e datas. Responda ao que foi perguntado. "
                       "Quando a tela mostrar erro, falha, aviso ou algo anormal, SEMPRE explique como especialista: 1) o que está acontecendo, citando o texto exato da tela; "
                       "2) a causa provável; 3) como corrigir, em passos e com comandos quando houver; 4) o que verificar se não resolver. Use o MATERIAL DA BASE quando ajudar. "
@@ -889,7 +894,9 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                       "VÁRIOS ERROS: quando houver mais de uma linha de erro, analise todas em conjunto e dê UMA análise da causa raiz do problema (a causa costuma estar na primeira linha de erro específica; \"finished with errors\" e \"skipping\" são consequências) e a correção; não repita nem liste as linhas da tela. "
                       "NOMES: copie nomes de jobs, servidores e mensagens EXATAMENTE como aparecem no texto lido (principalmente na LINHA SELECIONADA); se não conseguir ler o nome com certeza, diga \"o job selecionado\" e NUNCA invente um nome. A causa deve vir das linhas de erro da tela (ex.: Error: ...), não de suposição pelo status. "
                       "SEJA BREVE: responda em até 4 frases curtas (comece citando o nome do job ou item selecionado e o texto exato do erro, a causa provável e a ação principal para corrigir) e termine perguntando "
-                      "se ele quer os passos detalhados. Só detalhe passos, comandos e verificações se ele pedir. Comandos (quando pedidos) em blocos ```.")
+                      "se ele quer os passos detalhados. Só detalhe passos, comandos e verificações se ele pedir. Comandos (quando pedidos) em blocos ```. "
+                      "Se ele perguntou COMO fazer ou verificar algo, responda direto com os passos (curtos, numerados, com comandos), sem perguntar antes se quer os passos. "
+                      "Se a imagem é uma conversa ou um print anexado, analise o que ela mostra, não a tela atual dele.")
 
     def look_at_screen(self, question, spoken=False, history=(), screen=None, image_path=None):
         """Photographs the screen the user means (or uses `image_path`), reads its text with OCR, adds what Gota knows (knowledge base, skills,
@@ -901,12 +908,13 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         self.on_status("Olhando a tela...")
         if image_path:
             from PIL import Image
-            shot, which, big = Image.open(image_path).convert("RGB"), "a tela do computador", False
+            shot, which, big = Image.open(image_path).convert("RGB"), "uma IMAGEM que ele anexou à conversa (print de tela, de conversa ou foto; NÃO é a tela atual dele)", False
         else:
             try:
                 shot, which, big = self.capture(screen)
             except ValueError as e:
                 return str(e)
+            which += " do computador dele"
         import tempfile
         tmp = Path(tempfile.gettempdir())
         full = tmp / "gota_screen_full.png"
@@ -921,7 +929,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         # what Gota already knows about what is on screen (and, for an unknown error, the documentation from the internet)
         problems = tools.problem_lines(seen)
         row = ""
-        row_img = tools.selected_row_crop(full)   # the highlighted line of a list (e.g. the selected Veeam job), magnified and read by the vision model: exact names
+        row_img = None if image_path else tools.selected_row_crop(full)   # (not for an attached picture: one model call less) the highlighted line of a list (e.g. the selected Veeam job), magnified and read by the vision model: exact names
         if row_img:
             self.on_status("Lendo o item selecionado...")
             try:
@@ -929,7 +937,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                                     "Copie literalmente o texto desta linha de tabela (nome, tipo, status, resultado).", str(row_img)) or "").strip()[:400]
             except Exception:
                 row = ""
-        if not problems:   # the OCR could not read the (small) error text: ask the vision model to quote it, so the lookup has something to match
+        if not problems and not (image_path and len(seen) > 40):   # (an attached picture whose text was read needs no second reading) the OCR could not read the (small) error text: ask the vision model to quote it, so the lookup has something to match
             self.on_status("Procurando a mensagem de erro...")
             try:
                 quote = llm.one_shot("Você lê telas de sistemas de TI. Responda apenas com o texto exato.",
