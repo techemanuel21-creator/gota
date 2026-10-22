@@ -542,15 +542,18 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
     def quick_material(self, goal):
         """The best notes and skills for a question, ready to attach to it (local lookup only: no internet, no extra model call). With the cloud model's huge context
         this is generous (up to ~40 thousand characters, whole notes), which costs about a second and makes the answer rest on the curated material."""
-        hits = kb.search(goal, 6)
-        skill_hits = [h for h in skills_mod.search(goal, 2) if not h[1]["name"].startswith("desenvolver")][:2]
+        hits = kb.search(goal, 4)
+        skill_hits = [h for h in skills_mod.search(goal, 2) if not h[1]["name"].startswith("desenvolver")][:1]
         parts = []
         if skill_hits:
-            parts.append(skills_mod.prompt_block(skill_hits, 6000))
+            parts.append(skills_mod.prompt_block(skill_hits, 5000))
         if hits and kb.good_enough(hits, goal):
-            for _score, title, _src, txt in hits[:5]:
-                parts.append(f"[{title}]\n{txt[:9000]}")
-        return "\n\n".join(parts)[:40000]
+            top = hits[0][0]
+            for n, (score, title, _src, txt) in enumerate(hits[:3]):   # only the notes that are close to the best one: the rest is tokens for nothing
+                if n and score < top * 0.6:
+                    break
+                parts.append(f"[{title}]\n{txt[:6000 if n == 0 else 3500]}")
+        return "\n\n".join(parts)[:16000]
 
     def expert_answer(self, goal, spoken=False, image=None, query=None):
         """Answers IT questions from the knowledge base; when it has nothing good it learns from the internet first."""

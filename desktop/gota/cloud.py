@@ -8,7 +8,7 @@ from .outlook import _crypt
 URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"    # text only
 VISION_MODELS = ["google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-super-vl:free", "openrouter/free"]   # tried in order when a picture is part of the request
-FALLBACK_MODELS = ["openrouter/free"]   # used when the chosen model has been retired by the provider
+FALLBACK_MODELS = ["nvidia/nemotron-3.5-lightning:free", "thinkingmachines/inkling:free", "openrouter/free"]   # the spare of the race and the choice when the chosen model was retired: measured good first, the random router last
 KEY_FILE = ROOT / "openrouter.key"
 TEMPERATURE = 0.1
 HISTORY_MESSAGES = 1500      # conversation sent to the cloud model: measured 3.9 s to first text with 900 thousand characters of context
@@ -280,7 +280,7 @@ class Hybrid:
 
     notice = None   # set when the chosen model was retired: the window shows it once
 
-    HEDGE_SECONDS = 9   # a free model that has not started answering after this long is raced against a second one
+    HEDGE_SECONDS = 16   # a free model that has not started answering after this long is raced against a second one (the spare repeats the whole prompt: tokens and daily quota)
 
     def _race(self, call, user_cb):
         """call(client, on_delta) -> text. Runs the chosen model; if it has not produced its first words within HEDGE_SECONDS (free models queue and stall), a second model
