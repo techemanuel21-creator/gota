@@ -269,7 +269,7 @@ Imagens: o prompt vai em inglês, curto (até 35 palavras), fiel ao pedido, sem 
         sir = self.p.sir()
         if image is not None and not self.is_command(lower):   # a picture came with the message: it is the subject, never the live screen; one pass, no "decide what to do" call first
             on_phase("thinking")
-            return self.look_at_screen(goal, spoken=spoken, history=history, image_path=image), None
+            return self.look_at_image(goal, image, spoken=spoken, history=history), None
         if image is None:
             try:   # what he says about himself, his taste and his environment is kept across conversations (no model call: no delay)
                 self.memory.capture(goal)
@@ -898,6 +898,42 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                       "Se ele perguntou COMO fazer ou verificar algo, responda direto com os passos (curtos, numerados, com comandos), sem perguntar antes se quer os passos. "
                       "Se a imagem é uma conversa ou um print anexado, analise o que ela mostra, não a tela atual dele.")
 
+    IMAGE_SYSTEM = ("Você é o Gota, especialista sênior em TI e mordomo de {who}. O usuário ANEXOU uma imagem e fez uma pergunta sobre ela. Você recebe a IMAGEM e o TEXTO LIDO DELA (OCR, pode ter pequenos "
+                    "erros). Responda diretamente ao que ele perguntou, a partir do que a imagem mostra e do seu conhecimento. Se a pergunta for como fazer ou verificar algo, dê os passos práticos e os "
+                    "comandos exatos (em bloco ```). Se for um erro, dê a causa provável e a correção. Se a imagem é uma conversa ou documento, use o conteúdo dele como contexto da resposta. Seja objetivo "
+                    "(até 8 linhas), não descreva a imagem inteira e não diga 'texto lido'. Português do Brasil, chamando-o de \"{sir}\". Nunca invente o que não está na imagem.")
+
+    def look_at_image(self, question, image_path, spoken=False, history=()):
+        """Answers about a picture the user attached (a chat screenshot, an error, a diagram): the picture is read with OCR and by the vision model, with the notes of the knowledge base
+        for the subject, in one call. The screen is never captured for this."""
+        sir = self.p.sir()
+        llm = self.llm()
+        if llm is None:
+            return f"Minha mente ainda está carregando, {sir}."
+        self.on_status("Lendo a imagem...")
+        try:
+            seen = tools.ocr_tiles(image_path, scale=3)[:6000]
+        except Exception:
+            seen = ""
+        material = ""
+        try:
+            material = self.quick_material(f"{question} {seen[:700]}")[:14000]
+        except Exception:
+            pass
+        recent = "\n".join(f"{'Usuário' if r == 'user' else 'Gota'}: {str(x)[:300]}" for r, x in list(history)[-4:] if str(x).strip())
+        system = self.IMAGE_SYSTEM.format(who=self.p.address(), sir=sir) + (" Será FALADO: até 3 frases curtas, em português, sem aspas, listas nem símbolos." if spoken else "")
+        ask = ((f"Conversa até agora:\n{recent}\n\n" if recent else "") + f"PERGUNTA DO USUÁRIO: {question or 'O que há nesta imagem? Se for um erro, analise a causa e a correção.'}\n"
+               + (f"\nTEXTO LIDO DA IMAGEM (OCR):\n{seen}\n" if seen else "") + (f"\nMATERIAL DA BASE (use se ajudar):\n{material}\n" if material else ""))
+        self.on_status("Analisando a imagem...")
+        send_image = not (len(seen) >= 60 and getattr(llm, "text_only", lambda: False)())   # a text-only cloud model gets the text read from the picture (fast); a photo with no text still goes to a vision model
+        try:
+            out = llm.one_shot(system, ask, str(image_path) if send_image else None, on_delta=self.stream_to_ui())
+        except Exception as e:
+            return f"Não consegui analisar a imagem, {sir}: {e}"
+        data = self.extract_json(out) if str(out).lstrip().startswith(("{", "```")) else None
+        text = str((data or {}).get("text") or out).strip()
+        return speakable_text(text) if spoken else clean_glitch(text)
+
     def look_at_screen(self, question, spoken=False, history=(), screen=None, image_path=None):
         """Photographs the screen the user means (or uses `image_path`), reads its text with OCR, adds what Gota knows (knowledge base, skills,
         documentation learned from the internet for the error on screen) and answers as an IT specialist."""
@@ -930,14 +966,17 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
         problems = tools.problem_lines(seen)
         row = ""
         row_img = None if image_path else tools.selected_row_crop(full)   # (not for an attached picture: one model call less) the highlighted line of a list (e.g. the selected Veeam job), magnified and read by the vision model: exact names
-        if row_img:
+        text_only = getattr(llm, "text_only", lambda: False)()   # a cloud model that cannot see pictures: everything goes as text (OCR), no slow vision model in between
+        if row_img and text_only:
+            row = " | ".join(l.strip() for l in tools.ocr_image(row_img, 1).splitlines() if l.strip())[:400]
+        elif row_img:
             self.on_status("Lendo o item selecionado...")
             try:
                 row = (llm.one_shot("Você lê texto de imagens de telas. Responda apenas com o texto exato.",
                                     "Copie literalmente o texto desta linha de tabela (nome, tipo, status, resultado).", str(row_img)) or "").strip()[:400]
             except Exception:
                 row = ""
-        if not problems and not (image_path and len(seen) > 40):   # (an attached picture whose text was read needs no second reading) the OCR could not read the (small) error text: ask the vision model to quote it, so the lookup has something to match
+        if not problems and not text_only and not (image_path and len(seen) > 40):   # (an attached picture whose text was read needs no second reading) the OCR could not read the (small) error text: ask the vision model to quote it, so the lookup has something to match
             self.on_status("Procurando a mensagem de erro...")
             try:
                 quote = llm.one_shot("Você lê telas de sistemas de TI. Responda apenas com o texto exato.",
@@ -972,7 +1011,7 @@ Responda usando principalmente o MATERIAL abaixo (sua base de conhecimento). Reg
                    + ("\nLINHAS DE ERRO LIDAS NA TELA (analise TODAS em conjunto; as que dizem só \"finished with errors\" são consequência):\n" + "\n".join(f"- {l}" for l in problems) + "\n" if len(problems) > 1 else "")
                    + (f"\nTEXTO LIDO DA TELA (OCR):\n{seen}\n" if seen else "") + (f"\nMATERIAL DA BASE:\n{material[:2400]}\n" if material else "")
                    + "\nEntenda o que ele quer saber a partir da frase dele e responda.")
-            out = llm.one_shot(system, ask, str(path), on_delta=self.stream_to_ui())
+            out = llm.one_shot(system, ask, None if (text_only and len(seen) >= 120) else str(path), on_delta=self.stream_to_ui())
         except Exception as e:
             return f"Não consegui analisar a tela, {sir}: {e}"
         data = self.extract_json(out)

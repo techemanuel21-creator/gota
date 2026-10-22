@@ -423,14 +423,14 @@ class App(tk.Tk):
 
     def show_cloud_setup(self):
         """First use: the OpenRouter key for the online brain (optional: without it Gota answers with the on-device model only)."""
-        box = self.card("Inteligência na nuvem", "Online, o Gota fica bem mais rápido e esperto usando o modelo MiniMax pelo OpenRouter (gratuito). "
+        box = self.card("Inteligência na nuvem", "Online, o Gota fica bem mais rápido e esperto usando um modelo gratuito do OpenRouter (Nemotron Ultra, da NVIDIA). "
                                                  "Sem internet, ou sem chave, ele usa o Gemma que roda aqui no computador.")
         tk.Label(box, text="Cole a sua chave de API do OpenRouter (começa com sk-or-). Crie uma de graça em openrouter.ai/keys.", bg=SURFACE, fg=MUTED,
                  font=("Segoe UI", 10), wraplength=440, justify="center").pack(pady=(14, 0))
         pill = PillEntry(box, lambda: save(), parent_bg=SURFACE, fill=SURFACE2, hint="sk-or-v1-...")
         pill.pack(fill="x", pady=(12, 6))
         pill.focus()
-        note = tk.Label(box, text="Atenção: com a nuvem ligada, o que você escreve e os prints de tela que pedir para analisar são enviados ao OpenRouter/MiniMax. "
+        note = tk.Label(box, text="Atenção: com a nuvem ligada, o que você escreve e os prints de tela que pedir para analisar são enviados ao OpenRouter e ao provedor do modelo. "
                                   "Offline, tudo fica só neste computador. A chave fica guardada criptografada para o seu usuário do Windows.",
                         bg=SURFACE, fg=MUTED, font=("Segoe UI", 9), wraplength=440, justify="left")
         note.pack(pady=(4, 8))
@@ -783,7 +783,7 @@ class App(tk.Tk):
         self.entry = ChatInput(bar, self.send, left=[("attach", "＋", self.attach)], right=[("mic", "🎤", self.toggle_dictation), ("send", "➤", self.send, True)])
         self.entry.pack(fill="x")
         self.mic = self.entry.buttons["mic"]
-        tk.Label(main, text="Online usa a nuvem (MiniMax); offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
+        tk.Label(main, text="Online usa a nuvem (OpenRouter); offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
 
         cur = self.settings.get("current_chat")
         if not cur or not self.chats.get(cur):
@@ -897,6 +897,10 @@ class App(tk.Tk):
     def _poll_download(self):
         if not getattr(self, "dl_label", None) or not self.dl_label.winfo_exists():
             return
+        note = getattr(self.gemma, "notice", None)
+        if note:   # the cloud model was retired by its provider: say so once
+            self.gemma.notice = None
+            self.toast("Modelo da nuvem trocado", note)
         msg = f"🎨 Baixando o pintor… {self.images.percent}%" if self.images.downloading else "🎙 Baixando o modelo de voz…" if self.listener.whisper_downloading else ""
         self.dl_label.configure(text=msg, font=("Segoe UI", 9 if msg else 1))
         self.after(2000, self._poll_download)

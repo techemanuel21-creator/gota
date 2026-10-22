@@ -1017,6 +1017,75 @@ class UiBehaviours(unittest.TestCase):
         finally:
             root.destroy()
 
+class CloudResilience(unittest.TestCase):
+    class Settings:
+        def get(self, k): return {"cloud_model": "slow/model"}.get(k)
+
+    def hybrid(self, behaviours):
+        import time
+        from gota import cloud
+
+        class Fake:
+            def __init__(self, key, model="x", effort="low"):
+                self.key, self.model, self.effort, self.cancelled = key, model, effort, False
+            def cancel(self): self.cancelled = True
+            def chat(self, key, system, history, user_text, image=None, think=False, on_delta=None):
+                kind, delay, text = behaviours.get(self.model, ("ok", 0, self.model))
+                if kind == "gone":
+                    raise cloud.ModelGone("retired")
+                time.sleep(delay)
+                if self.cancelled:
+                    return "(cancelado)"
+                on_delta and on_delta(text)
+                return text
+        self.fake = Fake
+        self.saved = (cloud.OpenRouter, cloud.load_key, list(cloud.FALLBACK_MODELS))
+        cloud.OpenRouter, cloud.load_key = Fake, lambda: "k"
+        cloud.FALLBACK_MODELS[:] = ["spare/model"]
+        h = cloud.Hybrid(type("L", (), {"chat": lambda *a, **k: "local", "cancel": lambda s: None})(), self.Settings())
+        h.HEDGE_SECONDS = 0.2
+        self.addCleanup(lambda: (setattr(cloud, "OpenRouter", self.saved[0]), setattr(cloud, "load_key", self.saved[1]), cloud.FALLBACK_MODELS.__setitem__(slice(None), self.saved[2])))
+        return h
+
+    def test_a_slow_model_is_raced_by_a_second_one(self):
+        h = self.hybrid({"slow/model": ("ok", 1.5, "lento"), "spare/model": ("ok", 0, "rapido")})
+        seen = []
+        out = h.chat("k", "s", [], "oi", on_delta=seen.append)
+        self.assertEqual(out, "rapido")
+        self.assertEqual(seen, ["rapido"])                      # only the winner's words reach the screen
+
+    def test_a_model_that_answers_in_time_is_not_raced(self):
+        h = self.hybrid({"slow/model": ("ok", 0, "principal"), "spare/model": ("ok", 0, "reserva")})
+        self.assertEqual(h.chat("k", "s", [], "oi"), "principal")
+
+    def test_a_retired_model_is_replaced_and_the_user_is_told(self):
+        h = self.hybrid({"slow/model": ("gone", 0, ""), "spare/model": ("ok", 0, "reserva")})
+        self.assertEqual(h.chat("k", "s", [], "oi"), "reserva")
+        self.assertIn("aposentado", h.notice)
+        self.assertEqual(h.chat("k", "s", [], "de novo"), "reserva")   # and it stays on the replacement
+
+    def test_text_only_models_hand_pictures_to_the_vision_chain(self):
+        from gota import cloud
+        cloud._MODALITIES.update({"txt/only": False, "see/it": True})
+        calls = []
+
+        class C(cloud.OpenRouter):
+            def _post_one(self, messages, on_delta=None, retries=1):
+                calls.append(self.model)
+                return "visto"
+        saved = list(cloud.VISION_MODELS)
+        cloud.VISION_MODELS[:] = ["see/it"]
+        orig = cloud.OpenRouter
+        try:
+            cloud.OpenRouter = C
+            out = C("k", "txt/only").one_shot("s", "u", __file__.replace("test_core.py", "../gota/assets/cat/logo.png"))
+        finally:
+            cloud.OpenRouter = orig
+            cloud.VISION_MODELS[:] = saved
+        self.assertEqual(out, "visto")
+        self.assertEqual(calls, ["see/it"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

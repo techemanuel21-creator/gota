@@ -6,7 +6,9 @@ from .store import ROOT
 from .outlook import _crypt
 
 URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "minimax/minimax-m3.1-flash:free"
+DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"    # text only
+VISION_MODELS = ["google/gemma-4-31b-it:free", "nvidia/nemotron-3.5-super-vl:free", "openrouter/free"]   # tried in order when a picture is part of the request
+FALLBACK_MODELS = ["openrouter/free"]   # used when the chosen model has been retired by the provider
 KEY_FILE = ROOT / "openrouter.key"
 TEMPERATURE = 0.1
 HISTORY_MESSAGES = 1500      # conversation sent to the cloud model: measured 3.9 s to first text with 900 thousand characters of context
@@ -16,6 +18,26 @@ RETRY_AFTER_FAIL = 45   # seconds the cloud is skipped after an error, so an off
 
 class CloudError(Exception):
     pass
+
+
+class ModelGone(CloudError):
+    """The provider retired the model (e.g. the end of a free period): another one must be used."""
+
+
+_MODALITIES = {}
+
+
+def has_vision(model):
+    """Whether `model` takes pictures (from OpenRouter's public model list, read once). Unknown models count as text-only."""
+    if not _MODALITIES:
+        try:
+            req = urllib.request.Request("https://openrouter.ai/api/v1/models", headers={"User-Agent": "GotaDesktop/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                for m in json.loads(r.read().decode("utf-8", "ignore")).get("data", []):
+                    _MODALITIES[m["id"]] = "image" in (m.get("architecture", {}).get("input_modalities") or [])
+        except Exception:
+            _MODALITIES["__failed__"] = False
+    return bool(_MODALITIES.get(model))
 
 
 # ---------------------------------------------------------------------- the key (DPAPI: opens only for this Windows user)
@@ -86,6 +108,9 @@ class OpenRouter:
 
     def cancel(self):
         self.cancelled.set()
+        holder = getattr(self, "response_holder", None)
+        if holder is not None and holder is not self:
+            holder.cancel()
         r = self.response
         if r is not None:
             try:
@@ -94,7 +119,25 @@ class OpenRouter:
                 pass
 
     def _post(self, messages, on_delta=None, retries=1):
-        """Sends the messages; with on_delta the answer streams and on_delta(text so far) is called for every piece. Raises CloudError on failure."""
+        """Sends the messages; with on_delta the answer streams and on_delta(text so far) is called for every piece. Raises CloudError on failure.
+        A request that carries a picture goes to a vision model when the chosen one is text-only."""
+        has_image = any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"]) for m in messages)
+        if has_image and not has_vision(self.model):
+            last = None
+            for vm in VISION_MODELS:
+                try:
+                    clone = OpenRouter(self.key, vm, self.effort)
+                    self.response_holder = clone
+                    return clone._post_one(messages, on_delta, 0)
+                except CloudError as e:
+                    last = e
+            raise last or CloudError("nenhum modelo de visão respondeu")
+        return self._post_one(messages, on_delta, retries)
+
+    def cancel_all(self):
+        pass
+
+    def _post_one(self, messages, on_delta=None, retries=1):
         self.cancelled.clear()
         payload = {"model": self.model, "messages": messages, "stream": on_delta is not None, "temperature": TEMPERATURE}
         if self.effort and not getattr(self, "_no_effort", False):
@@ -117,6 +160,8 @@ class OpenRouter:
                     payload.pop("reasoning")
                     body = json.dumps(payload).encode("utf-8")
                     continue
+                if e.code in (404, 410) and re.search(r"retired|ended|no longer|deprecat|sunset|not available", detail, re.I):
+                    raise ModelGone(f"o modelo {self.model} foi aposentado: {detail[:160]}")
                 if e.code in (429, 502, 503, 504) and attempt < retries:
                     time.sleep(2)
                     continue
@@ -217,20 +262,110 @@ class Hybrid:
         if not key:
             return None
         model = self.settings.get("cloud_model") or DEFAULT_MODEL
+        if model in getattr(self, "retired", ()):
+            model = next((m for m in FALLBACK_MODELS if m not in self.retired), model)
         effort = self.settings.get("cloud_effort") or "low"
         if self._cloud is None or self._cloud.key != key or self._cloud.model != model or self._cloud.effort != effort:
             self._cloud = OpenRouter(key, model, effort)
         return self._cloud
 
+    def text_only(self):
+        """True when the next request goes to a cloud model that cannot see pictures: the caller sends the text read from the picture instead (much faster than a vision model)."""
+        cl = self._client()
+        return cl is not None and not has_vision(cl.model)
+
     def cloud_ready(self):
         """True when the next request will go to the cloud model (key set, switched on, and it did not fail a moment ago)."""
         return self._client() is not None
 
-    def _try(self, call, local_call):
+    notice = None   # set when the chosen model was retired: the window shows it once
+
+    HEDGE_SECONDS = 9   # a free model that has not started answering after this long is raced against a second one
+
+    def _race(self, call, user_cb):
+        """call(client, on_delta) -> text. Runs the chosen model; if it has not produced its first words within HEDGE_SECONDS (free models queue and stall), a second model
+        is started too and the first to speak wins; the other is cancelled. Same words on screen either way, and no waiting on the slow one."""
+        import queue as _q
+        primary = self._client()
+        spare = None
+        if not hasattr(primary, "model"):
+            return call(primary, user_cb)
+        if self.settings.get("hedge") is not False:
+            spare = next((m for m in FALLBACK_MODELS if m != primary.model and m not in getattr(self, "retired", ())), None)
+        if spare is None:
+            return call(primary, user_cb)
+        lock, state, clients, results = threading.Lock(), {"winner": None}, {}, _q.Queue()
+        spoke = threading.Event()
+
+        def gate(idx):
+            def cb(text):
+                with lock:
+                    if state["winner"] is None:
+                        state["winner"] = idx
+                        spoke.set()
+                        other = clients.get(1 - idx)
+                        if other is not None:
+                            other.cancel()
+                    if state["winner"] != idx:
+                        return
+                if user_cb:
+                    user_cb(text)
+            return cb
+
+        def worker(idx, client):
+            clients[idx] = client
+            try:
+                results.put((idx, call(client, gate(idx)), None))
+            except Exception as e:
+                results.put((idx, None, e))
+        threading.Thread(target=worker, args=(0, primary), daemon=True).start()
+        pending, raced = 1, False
+        deadline = time.time() + self.HEDGE_SECONDS
+        errors = []
+
+        def start_spare():
+            nonlocal pending, raced
+            raced = True
+            self.last_hedge = spare
+            threading.Thread(target=worker, args=(1, OpenRouter(primary.key, spare, primary.effort)), daemon=True).start()
+            pending += 1
+        while pending:
+            try:
+                idx, out, err = results.get(timeout=None if raced else max(0.0, deadline - time.time()))
+            except _q.Empty:   # the first model has said nothing for HEDGE_SECONDS: race a second one (unless it has just started to speak)
+                if spoke.is_set():
+                    raced = True
+                else:
+                    start_spare()
+                continue
+            pending -= 1
+            if err is None and state["winner"] in (None, idx):
+                for k, cl in clients.items():
+                    if k != idx:
+                        cl.cancel()
+                return out
+            if err is not None:
+                if isinstance(err, ModelGone):
+                    raise err   # a retired model is not "slow": switch models for good (the caller handles it)
+                errors.append(err)
+                if not raced:   # it failed outright: do not wait, go to the second model now
+                    start_spare()
+        raise errors[0] if errors else CloudError("nenhum modelo respondeu")
+
+    def _try(self, call, local_call, user_cb=None):
         c = self._client()
         if c is not None:
             try:
-                out = call(c)
+                try:
+                    out = self._race(call, user_cb)
+                except ModelGone:
+                    self.retired = getattr(self, "retired", set()) | {c.model}
+                    fb = next((m for m in FALLBACK_MODELS if m not in self.retired and m != c.model), None)
+                    if fb is None:
+                        raise
+                    self.notice = f"O modelo {c.model} foi aposentado pelo provedor. Estou usando {fb}; escolha outro em Nuvem (OpenRouter)."
+                    self._cloud = OpenRouter(c.key, fb, c.effort)
+                    out = self._race(call, user_cb)
                 self.using, self.last_error = "cloud", ""
                 from . import tools
                 tools.mark_online()
@@ -242,14 +377,14 @@ class Hybrid:
         return local_call()
 
     def chat(self, key, system, history, user_text, image=None, think=False, on_delta=None):
-        return self._try(lambda c: c.chat(key, system, history, user_text, image, think, on_delta),
-                         lambda: self.local.chat(key, system, history, user_text, image, think, on_delta))
+        return self._try(lambda c, cb: c.chat(key, system, history, user_text, image, think, cb),
+                         lambda: self.local.chat(key, system, history, user_text, image, think, on_delta), on_delta)
 
     def one_shot(self, system, user_text, image=None, on_delta=None):
-        return self._try(lambda c: c.one_shot(system, user_text, image, on_delta), lambda: self.local.one_shot(system, user_text, image, on_delta))
+        return self._try(lambda c, cb: c.one_shot(system, user_text, image, cb), lambda: self.local.one_shot(system, user_text, image, on_delta), on_delta)
 
     def complete(self, messages, on_delta=None):
-        return self._try(lambda c: c.complete(messages, on_delta), lambda: self.local.complete(messages, on_delta))
+        return self._try(lambda c, cb: c.complete(messages, cb), lambda: self.local.complete(messages, on_delta), on_delta)
 
     def warm(self, key, system, history):
         if self._client() is None:   # the cloud needs no warm-up; the local model does when it is the one answering

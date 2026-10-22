@@ -61,7 +61,7 @@ O [OpenClaude](https://github.com/Twigpine/openclaude) é um agente de programa�
 | Mapa do repositório | ferramenta `repo_map` (estrutura, arquivos-chave, classes e funções) |
 | Busca na web com reserva | Bing e, se falhar, DuckDuckGo |
 
-**Não trazido, de propósito:** servidor gRPC, hooks e o "buddy" de terminal. São infraestrutura de desenvolvedor para a linha de comando e não fazem sentido num assistente local. Também não torna o modelo de 2B mais inteligente: isso depende do modelo, não do agente. A nuvem (OpenRouter/MiniMax) e a extensão do VS Code foram trazidas depois; veja as seções "Nuvem e offline" do [README raiz](../README.md) e "Integração com o VS Code" deste arquivo.
+**Não trazido, de propósito:** servidor gRPC, hooks e o "buddy" de terminal. São infraestrutura de desenvolvedor para a linha de comando e não fazem sentido num assistente local. Também não torna o modelo de 2B mais inteligente: isso depende do modelo, não do agente. A nuvem (OpenRouter) e a extensão do VS Code foram trazidas depois; veja as seções "Nuvem e offline" do [README raiz](../README.md) e "Integração com o VS Code" deste arquivo.
 
 ## Limites honestos
 
@@ -104,3 +104,10 @@ O agente (modo de tarefas, projetos e rotinas) ganhou, em camadas e sem deixar o
 - **Documentos inteiros:** `read_document` lê PDF/DOCX/texto de até 700 mil caracteres numa chamada só (572 mil caracteres: 4,2 s). Acima disso, lê em partes ao mesmo tempo.
 - **Repositório inteiro:** `ask_codebase` lê o projeto todo (75 arquivos, 693 mil caracteres: 4,9 s) e responde com `arquivo:linha`. Em projetos, o agente já recebe os arquivos no primeiro passo e gasta menos passos lendo.
 - **Roteamento:** pedidos explícitos (conversas não lidas do WhatsApp, agenda, abrir programas, clima, horas) vão direto ao lugar certo sem chamar o modelo; o resto o modelo roteia em 1 a 4 s. Perguntas sobre WhatsApp, e-mail ou arquivos nunca mais "olham a tela".
+
+## Modelo da nuvem: padrão, troca automática e corrida entre modelos
+
+- **Padrão:** `nvidia/nemotron-3-ultra-550b-a55b:free` (texto, contexto de 1 milhão de tokens). Os números de velocidade da seção anterior foram medidos com o MiniMax M3.1 Flash, que foi gratuito até 22/10/2026 e agora é pago (US$ 0,15 por milhão de tokens lidos e US$ 0,60 por milhão escritos: centavos por pergunta). O Nemotron gratuito oscila mais (1 a 10 s para começar a responder; fila e limite de uso do plano gratuito).
+- **Imagens:** como o Nemotron só lê texto, o Gota manda o texto lido da imagem (OCR). Fotos sem texto vão a um modelo de visão (`google/gemma-4-31b-it:free`, `nvidia/nemotron-3.5-super-vl:free`, `openrouter/free`, nessa ordem).
+- **Corrida:** se o modelo escolhido não começa a responder em 9 s, o Gota inicia um segundo modelo gratuito em paralelo; o primeiro a falar vence e o outro é cancelado.
+- **Modelo aposentado:** se o provedor retirar o modelo (como aconteceu com o MiniMax gratuito), o Gota troca sozinho para `openrouter/free` e avisa numa notificação.

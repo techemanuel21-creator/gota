@@ -3,6 +3,7 @@ import os, sys, tempfile, time
 os.environ["GOTA_HOME"] = tempfile.mkdtemp(); sys.path.insert(0, ".")
 from gota import sdk
 g = sdk.Gota(confirm=lambda t, d=False: True)
+g.settings.set("cloud_model", os.environ.get("GOTA_CLOUD_MODEL", ""))
 b = g.brain
 b.whatsapp.connected = lambda: True
 b.whatsapp.unread = lambda s=None: [{"title": "Maria", "count": 2}]
