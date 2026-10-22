@@ -783,7 +783,7 @@ class App(tk.Tk):
         self.entry = ChatInput(bar, self.send, left=[("attach", "＋", self.attach)], right=[("mic", "🎤", self.toggle_dictation), ("send", "➤", self.send, True)])
         self.entry.pack(fill="x")
         self.mic = self.entry.buttons["mic"]
-        tk.Label(main, text="Online usa a nuvem (OpenRouter); offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
+        tk.Label(main, text="Online usa os modelos gratuitos do opencode; offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
 
         cur = self.settings.get("current_chat")
         if not cur or not self.chats.get(cur):
@@ -866,7 +866,7 @@ class App(tk.Tk):
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 1), anchor="w", pady=0)   # grows only while something downloads
         self.dl_label.pack(fill="x", padx=8)
-        groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
+        groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (opencode / OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
                   ("Conhecimento", (("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🧠  Memória e rotinas", self.memory_dialog))),
                   ("Preferências", (("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("🎤  Voz e microfone", self.mic_dialog),
                                     ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial))),
