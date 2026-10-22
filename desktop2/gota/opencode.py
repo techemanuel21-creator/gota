@@ -21,6 +21,16 @@ def find_exe():
     for cand in here:
         if cand.exists():
             return str(cand)
+    for cand in here:   # the repository carries opencode.zip (the exe is 172 MB, over GitHub's file limit): unpack it once, locally, no download
+        zipped = cand.with_name("opencode.zip")
+        if zipped.exists():
+            try:
+                import zipfile
+                with zipfile.ZipFile(zipped) as z:
+                    z.extract("opencode.exe", cand.parent)
+                return str(cand)
+            except Exception:
+                pass
     exe = shutil.which("opencode")
     if exe:
         return exe
