@@ -5,3 +5,6 @@
 
 # Third-party code downloaded only to study ideas (derived from proprietary code: never commit or ship it)
 references/
+
+# Gota 2.0 is its own repository (a fork of opencode)
+gota2/

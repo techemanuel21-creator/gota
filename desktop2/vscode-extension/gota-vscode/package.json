@@ -1,0 +1,43 @@
+{
+  "name": "gota-vscode",
+  "displayName": "Gota",
+  "description": "Use o modelo local do Gota (offline) para explicar, corrigir, refatorar, testar, documentar e gerar código no VS Code.",
+  "version": "0.1.0",
+  "publisher": "gota",
+  "license": "MIT",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "gota.ask", "title": "Gota: Perguntar" },
+      { "command": "gota.explain", "title": "Gota: Explicar a seleção" },
+      { "command": "gota.fix", "title": "Gota: Corrigir ou melhorar a seleção" },
+      { "command": "gota.refactor", "title": "Gota: Refatorar a seleção" },
+      { "command": "gota.tests", "title": "Gota: Criar testes para a seleção" },
+      { "command": "gota.docs", "title": "Gota: Documentar a seleção" },
+      { "command": "gota.generate", "title": "Gota: Gerar código aqui" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "submenu": "gota.menu", "group": "9_gota" }
+      ],
+      "gota.menu": [
+        { "command": "gota.explain", "when": "editorHasSelection", "group": "1@1" },
+        { "command": "gota.fix", "when": "editorHasSelection", "group": "1@2" },
+        { "command": "gota.refactor", "when": "editorHasSelection", "group": "1@3" },
+        { "command": "gota.tests", "when": "editorHasSelection", "group": "1@4" },
+        { "command": "gota.docs", "when": "editorHasSelection", "group": "1@5" },
+        { "command": "gota.generate", "group": "2@1" },
+        { "command": "gota.ask", "group": "2@2" }
+      ]
+    },
+    "submenus": [
+      { "id": "gota.menu", "label": "Gota" }
+    ],
+    "keybindings": [
+      { "command": "gota.ask", "key": "ctrl+alt+k", "when": "editorTextFocus" }
+    ]
+  }
+}
