@@ -1019,7 +1019,7 @@ class UiBehaviours(unittest.TestCase):
 
 class CloudResilience(unittest.TestCase):
     class Settings:
-        def get(self, k): return {"cloud_model": "slow/model"}.get(k)
+        def get(self, k): return {"cloud_model": "slow/model", "engine": "openrouter"}.get(k)   # these tests are about the OpenRouter client
 
     def hybrid(self, behaviours):
         import time
@@ -1086,6 +1086,55 @@ class CloudResilience(unittest.TestCase):
         self.assertEqual(calls, ["see/it"])
 
 
+
+class OpenCodeEngine(unittest.TestCase):
+    """Gota Desktop 2: opencode's free models behind the same client interface (the server is faked here)."""
+
+    def fake(self, reply, record):
+        import io, json
+        from gota import opencode
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): self.close()
+
+        def call(path, body=None, method=None, timeout=0):
+            record.append((method or ("POST" if body is not None else "GET"), path, body))
+            if path == "/session":
+                return Resp(json.dumps({"id": "ses_1"}).encode())
+            if path.endswith("/message"):
+                return Resp(json.dumps(reply).encode())
+            return Resp(b"{}")
+        saved = opencode._call
+        opencode._call = call
+        self.addCleanup(lambda: setattr(opencode, "_call", saved))
+        return opencode
+
+    def test_history_system_and_read_only_agent_go_to_the_server(self):
+        rec = []
+        oc = self.fake({"info": {}, "parts": [{"type": "text", "text": "Camberra."}]}, rec)
+        out = oc.OpenCode("opencode/big-pickle").chat("k", "SISTEMA", [("user", "oi"), ("assistant", "olá")], "capital da Austrália?")
+        self.assertEqual(out, "Camberra.")
+        body = next(b for m, p, b in rec if p.endswith("/message"))
+        self.assertEqual((body["model"], body["agent"], body["system"]), ({"providerID": "opencode", "modelID": "big-pickle"}, "plan", "SISTEMA"))
+        text = body["parts"][0]["text"]
+        self.assertIn("Usuário: oi", text)
+        self.assertTrue(text.endswith("capital da Austrália?"))
+        self.assertNotIn("tools", body)   # the tools are left alone: switching them off makes the free tier refuse the request
+
+    def test_a_refusal_from_opencode_becomes_a_cloud_error(self):
+        from gota import cloud
+        oc = self.fake({"info": {"error": {"name": "APIError", "data": {"message": "limite"}}}, "parts": []}, [])
+        with self.assertRaises(cloud.CloudError):
+            oc.OpenCode().one_shot("s", "u")
+
+    def test_the_bundled_executable_is_preferred(self):
+        from gota import opencode
+        exe = opencode.find_exe()
+        self.assertTrue(exe is None or exe.lower().endswith("opencode.exe"))
+        if (opencode.Path(opencode.__file__).resolve().parent.parent / "opencode" / "opencode.exe").exists():
+            self.assertIn("\\opencode\\opencode.exe", exe.lower().replace("/", "\\"))
+
+
 if __name__ == "__main__":
     unittest.main()
-

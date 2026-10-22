@@ -10,3 +10,6 @@ models/*
 !models/README.md
 
 *.log
+
+# opencode engine (172 MB, above GitHub's 100 MB file limit: the repository carries opencode/opencode.zip, 58 MB, and Gota unpacks it)
+opencode/opencode.exe

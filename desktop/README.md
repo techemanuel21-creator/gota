@@ -111,3 +111,12 @@ O agente (modo de tarefas, projetos e rotinas) ganhou, em camadas e sem deixar o
 - **Imagens:** como o Nemotron só lê texto, o Gota manda o texto lido da imagem (OCR). Fotos sem texto vão a um modelo de visão (`google/gemma-4-31b-it:free`, `nvidia/nemotron-3.5-super-vl:free`, `openrouter/free`, nessa ordem).
 - **Corrida:** se o modelo escolhido não começa a responder em 9 s, o Gota inicia um segundo modelo gratuito em paralelo; o primeiro a falar vence e o outro é cancelado.
 - **Modelo aposentado:** se o provedor retirar o modelo (como aconteceu com o MiniMax gratuito), o Gota troca sozinho para `openrouter/free` e avisa numa notificação.
+
+## Motor online: opencode (padrão), OpenRouter e Gemma local
+
+- **opencode (padrão):** o Gota inicia um `opencode serve` local (127.0.0.1, senha aleatória, só enquanto roda) e usa os modelos gratuitos do opencode, sem conta e sem chave de API. Os prompts e o roteador continuam sendo do Gota; o opencode só fornece o modelo, com o agente `plan` (somente leitura) numa pasta vazia, então o modelo não mexe em arquivos.
+- **O opencode vem dentro do projeto, no GitHub:** `opencode/opencode.zip` (58 MB; o `opencode.exe` tem 172 MB, acima do limite de 100 MB por arquivo do GitHub). Na primeira execução o Gota extrai o `.exe` ali mesmo, localmente; nada é baixado durante o uso. `build.bat` o empacota no `Gota.exe`.
+- **Modelo padrão:** `opencode/deepseek-v4.1-flash-free`. Se demorar mais de 16 s, outro modelo gratuito corre em paralelo (`glm-5.3-flash-free`, `nemotron-3.5-lightning-free`, `big-pickle`). Troque com a configuração `oc_model`.
+- **Imagens:** o texto é lido por OCR e enviado como texto (os modelos de visão gratuitos são muito lentos).
+- **Sem opencode (ou `engine` = `openrouter`):** usa o OpenRouter com a chave do usuário (padrão `nvidia/nemotron-3-ultra-550b-a55b:free`); offline, o Gemma 4 local.
+- Se o opencode mudar a regra do plano gratuito, o Gota cai sozinho no OpenRouter ou no Gemma local.

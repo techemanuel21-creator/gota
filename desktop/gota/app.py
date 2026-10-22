@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 
 from . import routines as routines_mod, memory as memory_mod, agent as agent_mod, cloud as cloud_mod, brain as brain_mod, chrome, imagegen, kb, llm, projects as projects_mod, server as server_mod, skills as skills_mod, store, tools, voice, vscode as vscode_mod
-from . import widgets as widgets_mod
+from . import widgets as widgets_mod, opencode as opencode_mod
 from .overlay import CatOverlay
 from .widgets import (ACCENT, BG, BORDER, COLORS, FONT, GREEN, GREEN_HOVER, HOVER, MUTED, PRIMARY, PRIMARY_HOVER, RED, SURFACE, SURFACE2, TEXT,
                       CatView, ChatInput, PillEntry, RoundButton, Toggle, bubble, lerp, rounded, sprites)
@@ -377,7 +377,7 @@ class App(tk.Tk):
         self.clear()
         if not self.profile.is_set:
             return self.show_name()
-        if not self.settings.get("cloud_asked"):
+        if not self.settings.get("cloud_asked") and not opencode_mod.available():   # with opencode installed there is no key to ask for
             return self.show_cloud_setup()
         path = self.model_path()
         if path is None:
@@ -783,7 +783,7 @@ class App(tk.Tk):
         self.entry = ChatInput(bar, self.send, left=[("attach", "＋", self.attach)], right=[("mic", "🎤", self.toggle_dictation), ("send", "➤", self.send, True)])
         self.entry.pack(fill="x")
         self.mic = self.entry.buttons["mic"]
-        tk.Label(main, text="Online usa a nuvem (OpenRouter); offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
+        tk.Label(main, text="Online usa os modelos gratuitos do opencode; offline roda neste computador (Gemma 4). Confira respostas importantes.", bg=BG, fg=MUTED, font=("Segoe UI", 8)).pack(pady=(0, 10))
 
         cur = self.settings.get("current_chat")
         if not cur or not self.chats.get(cur):
@@ -866,7 +866,7 @@ class App(tk.Tk):
         Toggle(sw, self.settings.get("hey_gota"), self.toggle_hey).pack(side="right")
         self.dl_label = tk.Label(foot, text="", bg=SURFACE, fg=ACCENT, font=("Segoe UI", 1), anchor="w", pady=0)   # grows only while something downloads
         self.dl_label.pack(fill="x", padx=8)
-        groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
+        groups = (("Conexões", (("🔗  Conexões (WhatsApp e Outlook)", self.connections_dialog), ("☁  Nuvem (opencode / OpenRouter)", self.cloud_dialog), ("🔌  Integrações", self.integrations_dialog))),
                   ("Conhecimento", (("📚  Base de conhecimento", self.kb_dialog), ("🧩  Habilidades", self.skills_dialog), ("⏱  Tarefas em segundo plano", self.background_dialog), ("🧠  Memória e rotinas", self.memory_dialog))),
                   ("Preferências", (("🏷   Apelidos de programas", self.aliases_dialog), ("🖥  Telas (apelidos)", self.screens_dialog), ("🎤  Voz e microfone", self.mic_dialog),
                                     ("🎩  Meu nome e tratamento", self.edit_name), ("❓  Como me chamar", self.tutorial))),

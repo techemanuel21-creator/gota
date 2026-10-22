@@ -137,6 +137,17 @@ class OpenRouter:
     def cancel_all(self):
         pass
 
+    @property
+    def fallbacks(self):
+        return FALLBACK_MODELS
+
+    def sibling(self, model):
+        """The same client for another model (the spare of the race, or the replacement of a retired one)."""
+        return OpenRouter(self.key, model, self.effort)
+
+    def sees_images(self):
+        return has_vision(self.model)
+
     def _post_one(self, messages, on_delta=None, retries=1):
         self.cancelled.clear()
         payload = {"model": self.model, "messages": messages, "stream": on_delta is not None, "temperature": TEMPERATURE}
@@ -258,6 +269,15 @@ class Hybrid:
     def _client(self):
         if self.settings.get("use_cloud") is False or time.time() < self.down_until:
             return None
+        if self.settings.get("engine") != "openrouter":   # Desktop 2: opencode's free models first, when it is installed
+            from . import opencode
+            if opencode.available():
+                model = self.settings.get("oc_model") or opencode.DEFAULT_MODEL
+                if model in getattr(self, "retired", ()):
+                    model = next((m for m in opencode.FALLBACKS if m not in self.retired), model)
+                if not isinstance(self._cloud, opencode.OpenCode) or self._cloud.model != model:
+                    self._cloud = opencode.OpenCode(model)
+                return self._cloud
         key = load_key()
         if not key:
             return None
@@ -272,7 +292,7 @@ class Hybrid:
     def text_only(self):
         """True when the next request goes to a cloud model that cannot see pictures: the caller sends the text read from the picture instead (much faster than a vision model)."""
         cl = self._client()
-        return cl is not None and not has_vision(cl.model)
+        return cl is not None and not (cl.sees_images() if hasattr(cl, "sees_images") else has_vision(cl.model))
 
     def cloud_ready(self):
         """True when the next request will go to the cloud model (key set, switched on, and it did not fail a moment ago)."""
@@ -291,7 +311,7 @@ class Hybrid:
         if not hasattr(primary, "model"):
             return call(primary, user_cb)
         if self.settings.get("hedge") is not False:
-            spare = next((m for m in FALLBACK_MODELS if m != primary.model and m not in getattr(self, "retired", ())), None)
+            spare = next((m for m in getattr(primary, "fallbacks", FALLBACK_MODELS) if m != primary.model and m not in getattr(self, "retired", ())), None)
         if spare is None:
             return call(primary, user_cb)
         lock, state, clients, results = threading.Lock(), {"winner": None}, {}, _q.Queue()
@@ -327,7 +347,7 @@ class Hybrid:
             nonlocal pending, raced
             raced = True
             self.last_hedge = spare
-            threading.Thread(target=worker, args=(1, OpenRouter(primary.key, spare, primary.effort)), daemon=True).start()
+            threading.Thread(target=worker, args=(1, primary.sibling(spare) if hasattr(primary, "sibling") else OpenRouter(primary.key, spare, primary.effort)), daemon=True).start()
             pending += 1
         while pending:
             try:
@@ -360,11 +380,11 @@ class Hybrid:
                     out = self._race(call, user_cb)
                 except ModelGone:
                     self.retired = getattr(self, "retired", set()) | {c.model}
-                    fb = next((m for m in FALLBACK_MODELS if m not in self.retired and m != c.model), None)
+                    fb = next((m for m in getattr(c, "fallbacks", FALLBACK_MODELS) if m not in self.retired and m != c.model), None)
                     if fb is None:
                         raise
-                    self.notice = f"O modelo {c.model} foi aposentado pelo provedor. Estou usando {fb}; escolha outro em Nuvem (OpenRouter)."
-                    self._cloud = OpenRouter(c.key, fb, c.effort)
+                    self.notice = f"O modelo {c.model} foi aposentado pelo provedor. Estou usando {fb}; escolha outro em Nuvem."
+                    self._cloud = c.sibling(fb) if hasattr(c, "sibling") else OpenRouter(c.key, fb, c.effort)
                     out = self._race(call, user_cb)
                 self.using, self.last_error = "cloud", ""
                 from . import tools
